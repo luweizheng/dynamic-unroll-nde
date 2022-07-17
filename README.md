@@ -1,2 +1,3 @@
-# jax-sde
-Neural Stochastic Differential Equation (SDE) on JAX
+# Dynamic Unroll for Neural Differential Equation
+
+Neural Differential Equation with Dynamic Unroll
