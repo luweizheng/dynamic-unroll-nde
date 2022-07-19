@@ -62,14 +62,4 @@ test.db
 .venv/
 
 # Logs
-logs/
-
-# Invenio-cli per machine file
-.invenio.private
-
-# S3 default bucket location
-data/default/*
-data/.minio.sys
-
-# Celery
-celerybeat-schedule
+*/logs/

@@ -301,9 +301,12 @@ class SDEStep(eqx.Module):
         (i, t0, dt, y0, key) = carry
         t = jnp.full((1, ), t0 + i * dt)
         _key1, _key2 = jrandom.split(key, 2)
-        # bm = jrandom.normal(_key1, (self.noise_size, )) * jnp.sqrt(dt)
         drift_term = self.mf(t=t, y=y0) * dt
-        diffusion_term = jnp.dot(self.sf(t=t, y=y0), self.bm.evaluate(t0=t))
+        # 原来的 diffrax 中的布朗运动 self.bm.evaluate()，他封装的比较复杂
+        # diffusion_term = jnp.dot(self.sf(t=t, y=y0), self.bm.evaluate(t0=t))
+        # 我自己写的简单的布朗运动
+        bm = jrandom.normal(_key1, (self.noise_size, )) * jnp.sqrt(dt)
+        diffusion_term = jnp.dot(self.sf(t=t, y=y0), bm)
         y1 = y0 + drift_term + diffusion_term
         carry = (i+1, t0, dt, y1, _key2)
 

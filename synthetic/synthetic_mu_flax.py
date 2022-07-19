@@ -178,7 +178,7 @@ def train():
 
     noise_size = 16
     hidden_size = 16
-    width_size = 256
+    width_size = 128
     depth = 6
     unroll = 1
     key = jrandom.PRNGKey(0)
