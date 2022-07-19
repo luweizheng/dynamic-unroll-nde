@@ -178,9 +178,9 @@ def train():
 
     noise_size = 16
     hidden_size = 16
-    width_size = 128
-    depth = 6
-    unroll = 1
+    width_size = 256
+    depth = 3
+    unroll = 4
     key = jrandom.PRNGKey(0)
 
     model = NeuralDE(
@@ -198,26 +198,28 @@ def train():
 
     # make features
     output = ""
-    # cell = SDEStep(dim=args.dim, layers=args.layers, dt=dt, noise='diagonal')
+    step = SDEStep(noise_size=noise_size, hidden_size=hidden_size, width_size=width_size, depth=depth)
 
-    # dummy_carry = (0, jnp.zeros((args.batch_size, args.dim)))
-    # cell_variable = cell.init(rng, carry=dummy_carry, dW=dummy_dW[0])
+    dummy_carry = (0, 0.1, dummy_y0)
+    cell_variable = step.init(rng, carry=dummy_carry, inp=None)
 
-    # hlo_module = jax.xla_computation(cell.apply)({'params': cell_variable['params']}, carry=dummy_carry, dW=dummy_dW[0]).as_hlo_module()
-    # client = jax.lib.xla_bridge.get_backend()
-    # step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
-    # step_bytes_access_gb = step_cost['bytes accessed'] / 1e9
-    # step_flops_g = step_cost['flops'] / 1e9
+    hlo_module = jax.xla_computation(step.apply)({'params': cell_variable['params']}, carry=dummy_carry, inp=None).as_hlo_module()
+    client = jax.lib.xla_bridge.get_backend()
+    step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+    step_bytes_access_gb = step_cost['bytes accessed'] / 1e9
+    step_flops_g = step_cost['flops'] / 1e9
     
-    # # step bytes access in GB
-    # output = output + str(step_bytes_access_gb) + ','
-    # # step G FLOPS 
-    # output = output + str(step_flops_g) + ','
-    # # step Arithmetic Intensity
-    # output = output + str(step_flops_g / step_bytes_access_gb) + ','
+    # step bytes access in GB
+    output = output + str(step_bytes_access_gb) + ','
+    # step G FLOPS 
+    output = output + str(step_flops_g) + ','
+    # step Arithmetic Intensity
+    output = output + str(step_flops_g / step_bytes_access_gb) + ','
 
     
-    # total_params = sum(p.size for p in jax.tree_leaves(cell_variable['params']))
+    total_params = sum(p.size for p in jax.tree_leaves(cell_variable['params']))
+    #  params size in million
+    output = output + str(total_params / 1e6) + ','
 
     # mdl_kwargs = {'dim': args.dim, 'dt': dt, 'noise': "diagonal", 'layers': args.layers}
     # sde = ForwardSDE(SDEStep, mdl_kwargs, dt, unroll=args.unroll)
@@ -234,9 +236,6 @@ def train():
     # output = output + str(full_flops_g) + ','
     # # step Arithmetic Intensity
     # output = output + str(full_flops_g / full_bytes_access_gb) + ','
-
-    # #  params size in million
-    # output = output + str(total_params / 1e6) + ','
 
     # # input dimension
     # output = output + str(args.dim) + ','

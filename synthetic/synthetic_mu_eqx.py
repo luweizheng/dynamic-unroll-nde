@@ -15,7 +15,7 @@ import optax  # https://github.com/deepmind/optax
 from jax.config import config
 # We use GPU as the default backend.
 # If you want to use cpu as backend, uncomment the following line.
-config.update("jax_platform_name", "cpu")
+# config.update("jax_platform_name", "cpu")
 
 def lipswish(x):
     return 0.909 * jnn.silu(x)
@@ -73,7 +73,7 @@ class SigmaField(eqx.Module):
 
 class SDEStep(eqx.Module):
     mf: MuField  # drift
-    sf: SigmaField  # diffusion
+    sf: jnp.ndarray  # diffusion
     noise_size: int
 
     def __init__(
@@ -162,16 +162,16 @@ class NeuralDE(eqx.Module):
 
         return output
 
-    def __call__(self, y0, num_timesteps, ts, unroll, key):
-        t0 = ts[0]
-        t1 = ts[-1]
+    def __call__(self, y0, num_timesteps, unroll, key):
+        # t0 = ts[0]
+        # t1 = ts[-1]
         dt0 = 1.0
         _, bm_key = jrandom.split(key, 2)
 
         def step_fn(carry, inp):
             return self.step(carry, inp)
         
-        carry = (0, t0, dt0, y0, bm_key)
+        carry = (0, 0.0, dt0, y0, bm_key)
 
         _, ys = jax.lax.scan(step_fn, carry, xs=None, length=num_timesteps, unroll=unroll)
         # ys = solve(step_fn, y0, t0, dt0, num_timesteps, unroll, bm_key)
@@ -188,34 +188,35 @@ def solve(step, y0, t0, dt, num_steps, unroll, bm_key):
     return ys
 
 @eqx.filter_jit
-def train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll, key):
-    
-    @eqx.filter_jit
-    def loss_fn(model):
+def loss_fn(model, y0, num_timesteps, unroll, key):
 
-        # @partial(jit)
-        # def forward_fn(params, y0, dW, ts, times):
-        #     ys = train_state.apply_fn({'params': params}, y0, dW, ts, times)
-        #     return ys
+    # @partial(jit)
+    # def forward_fn(params, y0, dW, ts, times):
+    #     ys = train_state.apply_fn({'params': params}, y0, dW, ts, times)
+    #     return ys
 
-        # ys = forward_fn(params, y0, dW, ts, times)
-        ys = jax.vmap(model, in_axes=[0, None, None, None, None])(y0, num_timesteps, ts, unroll, key)
-        # dummy loss
-        loss = jnp.sum(jnp.mean(ys, axis=0))
+    # ys = forward_fn(params, y0, dW, ts, times)
+    ys = jax.vmap(model, in_axes=[0, None, None, None])(y0, num_timesteps, unroll, key)
+    # dummy loss
+    loss = jnp.sum(jnp.mean(ys, axis=0))
 
-        return loss
+    return loss
 
-    # @eqx.filter_value_and_grad
-    # def grad_loss():
-    #     return loss_fn(model)
 
-    
-    loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
+@eqx.filter_value_and_grad
+def grad_loss(model, y0, num_timesteps, unroll, key):
+    return loss_fn(model, y0, num_timesteps, unroll, key)
+
+
+@eqx.filter_jit
+def train_step(model, y0, num_timesteps, optimizer, opt_state, unroll, key):
+   
+    loss, grads = grad_loss(model, y0, num_timesteps, unroll, key)
 
     updates, opt_state = optimizer.update(grads, opt_state)
     model = eqx.apply_updates(model, updates)
 
-    return model, loss
+    return loss, model
 
 def train():
 
@@ -225,7 +226,7 @@ def train():
     hidden_size = 16
     width_size = 256
     depth = 3
-    unroll = 1
+    unroll = 4
     key = jrandom.PRNGKey(0)
 
     model = NeuralDE(
@@ -252,15 +253,16 @@ def train():
 
     start_time = time.time()
 
-    for step in range(10):
+    for step in range(1000):
         key, _ = jax.random.split(key)
-        model, loss = train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll=unroll, key=key)
+        # grad_loss(model, y0, num_timesteps, unroll, key)
+        loss = train_step(model, y0, num_timesteps, optimizer, opt_state, unroll=unroll, key=key)
 
         if step == 0:
             compile_time = time.time()
-            iter_time = time.time()
-        print(f"iter: {time.time() - iter_time}")
-        iter_time = time.time()
+            # iter_time = time.time()
+        # print(f"iter: {time.time() - iter_time}")
+        # iter_time = time.time()
         # if step % 100 == 0 and step > 0:
         #     iter_time_list.append(time.time() - iter_time)
         #     iter_time = time.time()
