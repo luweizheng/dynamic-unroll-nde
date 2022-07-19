@@ -12,6 +12,11 @@ import jax.random as jrandom
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
 
+from jax.config import config
+# We use GPU as the default backend.
+# If you want to use cpu as backend, uncomment the following line.
+config.update("jax_platform_name", "cpu")
+
 def lipswish(x):
     return 0.909 * jnn.silu(x)
 
@@ -28,7 +33,7 @@ class MuField(eqx.Module):
             out_size=hidden_size,
             width_size=width_size,
             depth=depth,
-            activation=lipswish,
+            activation=jnn.relu,
             final_activation=jnn.tanh,
             key=mlp_key,
         )
@@ -85,9 +90,7 @@ class SDEStep(eqx.Module):
         mf_key, sf_key = jrandom.split(key, 2)
 
         self.mf = MuField(hidden_size, width_size, depth, key=mf_key)
-        self.sf = SigmaField(
-            noise_size, hidden_size, width_size, depth, key=sf_key
-        )
+        self.sf = jnp.full((hidden_size, noise_size), 0.3)
 
         self.noise_size = noise_size
 
@@ -97,7 +100,7 @@ class SDEStep(eqx.Module):
         _key1, _key2 = jrandom.split(key, 2)
         bm = jrandom.normal(_key1, (self.noise_size, )) * jnp.sqrt(dt)
         drift_term = self.mf(t=t, y=y0) * dt
-        diffusion_term = jnp.dot(self.sf(t=t, y=y0), bm)
+        diffusion_term = jnp.dot(self.sf, bm)
         y1 = y0 + drift_term + diffusion_term
         carry = (i+1, t0, dt, y1, _key2)
 
@@ -159,7 +162,7 @@ class NeuralDE(eqx.Module):
 
         return output
 
-    def __call__(self, y0, num_timesteps, ts, key):
+    def __call__(self, y0, num_timesteps, ts, unroll, key):
         t0 = ts[0]
         t1 = ts[-1]
         dt0 = 1.0
@@ -168,22 +171,26 @@ class NeuralDE(eqx.Module):
         def step_fn(carry, inp):
             return self.step(carry, inp)
         
-        ys = solve(step_fn, y0, t0, dt0, num_timesteps, bm_key)
+        carry = (0, t0, dt0, y0, bm_key)
+
+        _, ys = jax.lax.scan(step_fn, carry, xs=None, length=num_timesteps, unroll=unroll)
+        # ys = solve(step_fn, y0, t0, dt0, num_timesteps, unroll, bm_key)
         
         return ys
 
 
 
-def solve(step, y0, t0, dt, num_steps, bm_key):
+def solve(step, y0, t0, dt, num_steps, unroll, bm_key):
     carry = (0, t0, dt, y0, bm_key)
 
-    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps)
+    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=unroll)
 
     return ys
 
 @eqx.filter_jit
 def train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll, key):
-
+    
+    @eqx.filter_jit
     def loss_fn(model):
 
         # @partial(jit)
@@ -192,7 +199,7 @@ def train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll,
         #     return ys
 
         # ys = forward_fn(params, y0, dW, ts, times)
-        ys = jax.vmap(model, in_axes=[0, None, None, None])(y0, num_timesteps, ts, key)
+        ys = jax.vmap(model, in_axes=[0, None, None, None, None])(y0, num_timesteps, ts, unroll, key)
         # dummy loss
         loss = jnp.sum(jnp.mean(ys, axis=0))
 
@@ -214,10 +221,11 @@ def train():
 
     key = jrandom.PRNGKey(42)
 
-    noise_size = 3
-    hidden_size = 8
-    width_size = 4
-    depth = 5
+    noise_size = 16
+    hidden_size = 16
+    width_size = 256
+    depth = 3
+    unroll = 1
     key = jrandom.PRNGKey(0)
 
     model = NeuralDE(
@@ -246,12 +254,12 @@ def train():
 
     for step in range(10):
         key, _ = jax.random.split(key)
-        model, loss = train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll=1, key=key)
+        model, loss = train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll=unroll, key=key)
 
         if step == 0:
             compile_time = time.time()
             iter_time = time.time()
-        # print(f"iter: {time.time() - iter_time}")
+        print(f"iter: {time.time() - iter_time}")
         iter_time = time.time()
         # if step % 100 == 0 and step > 0:
         #     iter_time_list.append(time.time() - iter_time)

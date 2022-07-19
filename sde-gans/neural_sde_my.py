@@ -366,7 +366,7 @@ class NeuralSDE(eqx.Module):
 def solve(step, y0, t0, dt, num_steps, bm_key):
     carry = (0, t0, dt, y0, bm_key)
 
-    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps)
+    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=1)
 
     return ys
 
