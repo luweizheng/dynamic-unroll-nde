@@ -74,7 +74,7 @@ class SigmaField(eqx.Module):
 
 class SDEStep(eqx.Module):
     mf: MuField  # drift
-    sf: jnp.ndarray  # diffusion
+    sf: SigmaField  # diffusion
     noise_size: int
 
     def __init__(
@@ -91,7 +91,9 @@ class SDEStep(eqx.Module):
         mf_key, sf_key = jrandom.split(key, 2)
 
         self.mf = MuField(hidden_size, width_size, depth, key=mf_key)
-        self.sf = jnp.full((hidden_size, noise_size), 0.3)
+        self.sf = SigmaField(
+            noise_size, hidden_size, width_size, depth, key=sf_key
+        )
 
         self.noise_size = noise_size
 
@@ -101,7 +103,7 @@ class SDEStep(eqx.Module):
         _key1, _key2 = jrandom.split(key, 2)
         bm = jrandom.normal(_key1, (self.noise_size, )) * jnp.sqrt(dt)
         drift_term = self.mf(t=t, y=y0) * dt
-        diffusion_term = jnp.dot(self.sf, bm)
+        diffusion_term = jnp.dot(self.sf(t=t, y=y0), bm)
         y1 = y0 + drift_term + diffusion_term
         carry = (i+1, t0, dt, y1, _key2)
 
@@ -151,6 +153,7 @@ class NeuralSDE(eqx.Module):
         hlo_module = jax.xla_computation(step_fn)(carry, None).as_hlo_module()
         client = jax.lib.xla_bridge.get_backend()
         step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+        # print(step_cost)
         step_bytes_access_gb = step_cost['bytes accessed'] / 1e9
         step_flops_g = step_cost['flops'] / 1e9
         
@@ -171,10 +174,12 @@ class NeuralSDE(eqx.Module):
         # noise_size: browian motion size ? 
         # TODO should we add this for ODE/CDE？
         # output = output + str(self.noise_size) + ','
+        
         # width_size: width for every layer of MLP
-        output = output + str(self.width_size) + ','
+        # output = output + str(self.width_size) + ','
+        
         # depth: depth of MLP
-        output = output + str(self.depth) + ','
+        output = output + str(self.depth * 2) + ','
 
         return output
 
@@ -299,35 +304,36 @@ if __name__ == '__main__':
                         noise_size=16,
                         num_timesteps=50,
                         num_iters=1000, 
-                        depth=3, 
+                        depth=4, 
                         width_size=64,
                         unroll=1)
     # warm up run
     main(args=args)
-    # for batch_size in [512]:
-    for batch_size in [128, 256, 512]:
-        # for num_timesteps in [50]:
-        for num_timesteps in [50, 100, 200]:
-            # for width_size in [64]:
-            for width_size in [64, 128, 256, 512, 1024]:
-                # for depth in [3]:
-                for depth in [3, 4, 5, 6]:
-                    for hidden_size in [16, 32, 64]:
-                        n = 0
-                        while n <= 5:
-                            if n == 0:
-                                unroll = 1
-                            else:
-                                unroll = math.ceil(0.1 * n * num_timesteps)
-                                if unroll > 100:
-                                    break
-                            args = Args(batch_size=batch_size, 
-                                hidden_size=hidden_size,
-                                noise_size=hidden_size,
-                                num_timesteps=num_timesteps,
-                                num_iters=1000, 
-                                depth=depth, 
-                                width_size=width_size,
-                                unroll=unroll)
-                            n += 1
-                            main(args=args)
+    
+    # for batch_size in [128]:
+    # # for batch_size in [128, 256, 512]:
+    #     for num_timesteps in [64]:
+    #     # for num_timesteps in [50, 100, 200]:
+    #         for width_size in [64]:
+    #         # for width_size in [64, 128, 256, 512, 1024]:
+    #             for depth in [3]:
+    #             # for depth in [3, 4, 5, 6]:
+    #                 for hidden_size in [16, 32, 64]:
+    #                     n = 0
+    #                     while n <= 5:
+    #                         if n == 0:
+    #                             unroll = 1
+    #                         else:
+    #                             unroll = math.ceil(0.1 * n * num_timesteps)
+    #                             if unroll > 100:
+    #                                 break
+    #                         args = Args(batch_size=batch_size, 
+    #                             hidden_size=hidden_size,
+    #                             noise_size=hidden_size,
+    #                             num_timesteps=num_timesteps,
+    #                             num_iters=1000, 
+    #                             depth=depth, 
+    #                             width_size=width_size,
+    #                             unroll=unroll)
+    #                         n += 1
+    #                         main(args=args)

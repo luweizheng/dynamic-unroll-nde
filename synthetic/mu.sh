@@ -1,6 +1,6 @@
 #!/bin/bash
 
 source activate jax
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
-python -u synthetic.py > ./logs/mu_unroll_0_5.csv &
+python -u synthetic_mu_eqx.py > ./logs/mu.csv &

@@ -21,12 +21,104 @@ from jax import jit
 import flax.linen as nn
 from flax.training.train_state import TrainState
 
-from jax_sde.sde import BaseSDEStep, ForwardSDE
-
 Array = jnp.ndarray
 Scalar = Union[float, int]
 
 Data = namedtuple('Data', ['ts', 'ts_ext', 'ts_vis', 'ys'])
+
+def prod_diagonal(g, v):
+    return g * v
+
+def prod_default(g, v):
+    return jnp.einsum('...ij,...j->...i', g, v)
+
+class BaseSDEStep(nn.Module):
+    # dim: int
+    # layers: Sequence
+    dt: float
+    noise: str = "default"
+    # names: Dict = {
+    #     "drift": "f", 
+    #     "diffusion": "g", 
+    #     "prior_drift": "h"
+    # }
+
+    # def method_rename(self, drift="f", diffusion="g", prior_drift="h"):
+    #     for name, value in zip(('f', 'g', 'h'),
+    #                            (drift, diffusion, prior_drift)):
+    #         try:
+    #             setattr(self, name, getattr(self, value))
+    #         except AttributeError:
+    #             pass
+
+    def setup(self):
+        if self.noise == "diagonal":
+            self.prod_fn = prod_diagonal
+        else:
+            self.prod_fn = prod_default
+        
+    def mu_fn(self, t, x):
+        raise RuntimeError("Method `drift_fn` has not been provided.")
+    
+    def sigma_fn(self, t, x):
+        raise RuntimeError("Method `diffusion_fn` has not been provided.")
+
+    def __call__(self, carry, dW):
+        i, x0 = carry
+        t0 = i * self.dt
+        drift_term = self.mu_fn(t0, x0) * self.dt
+        diffusion_term = self.prod_fn(self.sigma_fn(t0, x0), dW) * jnp.sqrt(self.dt)
+        
+        x1 = x0 + drift_term + diffusion_term
+
+        carry = (i +1, x1)
+        output = x1
+        return carry, output
+
+
+class ForwardSDE(nn.Module):
+    sde_step_mdl: nn.Module
+    sde_step_kwargs: Dict
+    dt: float
+    unroll_type: str = "dynamic"
+    unroll: int = 1
+
+    @nn.compact
+    def __call__(self, y0, dW, ts, times, *args, **kwargs):
+        carry = (0, y0)
+
+        if self.unroll_type == "dynamic":
+            sdes = nn.scan(self.sde_step_mdl,
+                variable_broadcast="params",
+                split_rngs={"params": False},
+                in_axes=(0),
+                out_axes=(0),
+                unroll=self.unroll)
+            (carry, _ys) = sdes(name="dynamic_sde", **self.sde_step_kwargs)(carry, dW)
+        elif self.unroll_type == "static":
+            length = dW.shape[0]
+            _ys = []
+            for i in range(length):
+                carry, y = self.sde_step_mdl(name="static_sde", **self.sde_step_kwargs)(carry, dW[i])
+                _ys.append(y)
+            _ys = jnp.stack(_ys)
+        
+        # saveat_indices = jnp.searchsorted(times, ts)
+
+        # ys = linear_interpolation(ts[0] + ts_indices * self.dt, 
+        #     _ys[ts_indices], 
+        #     ts[0] + (ts_indices + 1) * self.dt, 
+        #     _ys[ts_indices + 1], 
+        #     ts)
+        
+        dt = self.dt
+        
+        # ys = linear_interpolation(times[0] + (saveat_indices - 1) * dt, 
+        #     _ys[saveat_indices - 1], 
+        #     times[0] + (saveat_indices) * dt, 
+        #     _ys[saveat_indices], 
+        #     saveat)
+        return _ys
 
 
 def _stable_division(a, b, epsilon=1e-6):
