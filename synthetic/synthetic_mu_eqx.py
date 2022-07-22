@@ -275,11 +275,10 @@ def train(args):
         # if step % 100 == 0 and step > 0:
         #     iter_time_list.append(time.time() - iter_time)
         #     iter_time = time.time()
-    features = features + str(args.batch_size) + ','
-    features = features + str(args.unroll) + ','
-    output = features + str(compile_time - start_time) + ','
-    output = output + str(time.time() - compile_time)
-    print(output)
+    
+    features.append(compile_time - start_time)
+    features.append(time.time() - compile_time)
+    print(','.join(map(str, features)))
 
 @dataclass
 class Args:
@@ -307,22 +306,22 @@ def main(args):
 if __name__ == '__main__':
     # test code
     args = Args(batch_size=128, 
-                        hidden_size=16,
-                        noise_size=16,
-                        num_timesteps=50,
-                        num_iters=1000, 
-                        depth=3, 
-                        width_size=64,
-                        unroll=1)
+            hidden_size=16,
+            noise_size=16,
+            num_timesteps=50,
+            num_iters=1000, 
+            depth=3, 
+            width_size=64,
+            unroll=1)
     # warm up run
     main(args=args)
     # for batch_size in [512]:
-    for batch_size in [128, 256, 512]:
-        # for num_timesteps in [50]:
+    for batch_size in [64, 128, 256]:
+    #     # for num_timesteps in [50]:
         for num_timesteps in [50, 100, 200]:
-            # for width_size in [64]:
-            for width_size in [64, 128, 256, 512, 1024]:
-                # for depth in [3]:
+    #         # for width_size in [64]:
+            for width_size in [16, 64, 128, 256, 512]:
+    #             # for depth in [3]:
                 for depth in [3, 4, 5, 6]:
                     for hidden_size in [16, 32, 64]:
                         n = 0

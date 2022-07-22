@@ -293,8 +293,8 @@ def main():
     # test code
     args = Args(batch_size=128, 
                 dt=0.2,
-                dim=16,
-                num_timesteps=50,
+                dim=100,
+                num_timesteps=100,
                 num_iters=1000, 
                 depth=3, 
                 width_size=64,

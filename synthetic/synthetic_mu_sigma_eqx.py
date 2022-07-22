@@ -316,7 +316,7 @@ def main():
     # for batch_size in [128, 256, 512]:
         for num_timesteps in [50, 100, 200]:
         # for num_timesteps in [50, 100, 200]:
-            for width_size in [16, 32, 64, 128, 256]:
+            for width_size in [16, 128, 256]:
             # for width_size in [64, 128, 256, 512, 1024]:
                 for depth in [3, 4, 5, 6]:
                 # for depth in [3, 4, 5, 6]:
