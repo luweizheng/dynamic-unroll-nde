@@ -297,26 +297,15 @@ def train(model, num_iters, output, batch_size, unroll=1, rng=jrandom.PRNGKey(42
             #     iter_time_list.append(time.time() - iter_time)
             #     iter_time = time.time()
 
-    if verbose:
-        # output = output + str(num_iters) + ","
-        # output = output + str(np.mean(iter_time_list)) + ","
-        output = output + str(compile_time - start_time) + ','
-        output = output + str(time.time() - compile_time)
-
-        # print(f"num_iteration: {num_iters}")
-        # print(f"unroll: {unroll}")
-        # print(f"batch_size: {batch_size}")
-        # print(f"total_time: {time.time() - start_time}")
-        # print(f"iter100_time: {np.mean(iter_time_list)}")
-        # print(f"compile_time: {(compile_time - start_time)}")
+    running_time = (compile_time - start_time, time.time() - compile_time)
     
-    return model, output
+    return model, running_time
 
 
 def main(args):
     M = args.batch_size  # number of trajectories (batch size)
     N = args.num_timesteps  # number of time snapshots
-    D = 100  # number of dimensions
+    D = args.dim  # number of dimensions
     T = 1.0 # expire time
 
     def g_fn(X):
@@ -334,8 +323,8 @@ def main(args):
         del t
         return 0.05 * (Y - jnp.sum(X * Z, axis=1, keepdims=True))
 
-    x0 = jnp.array([[1.0, 0.5] * int(100 / 2)])
-    x0 = jnp.broadcast_to(x0, (M, 100))
+    x0 = jnp.array([[1.0, 0.5] * int(args.dim / 2)])
+    x0 = jnp.broadcast_to(x0, (args.batch_size, args.dim))
 
     tspan = (0.0, 1.0)
     num_timesteps = 50
@@ -373,13 +362,14 @@ def main(args):
     num_iters = args.num_iters
     # M = jnp.array(M, dtype=jnp.int32)
     
-    fbsdeModel, output = train(fbsdeModel, num_iters, output, batch_size = M, unroll=args.unroll)
-    print(output)
+    fbsdeModel, running_time = train(fbsdeModel, num_iters, output, batch_size = M, unroll=args.unroll)
+    print(f"unroll: {args.unroll}, actuall time {running_time[0] + running_time[1] * 10}")
 
 @dataclass
 class Args:
     batch_size: int
     num_timesteps: int
+    dim: int
     num_iters: int
     layers: Sequence[int]
     unroll: int
@@ -398,37 +388,35 @@ if __name__ == '__main__':
 
     # args = AP.parse_args()
 
-    num_iters = 1000
+    args = Args(batch_size=128, 
+            num_timesteps=50,
+            dim=16,
+            num_iters=1000, 
+            layers=[64, 64, 1], 
+            unroll=10)
+    unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
+    for unroll in unroll_list:
+        args.unroll = unroll
+        main(args)
     # for batch_size in [64, 128, 256, 512, 1024]:
+    # for batch_size in [256, 512]:
     #     for num_timesteps in [50, 100, 150, 200, 250, 300]:
     #         for layer in [64, 128, 256, 512, 1024]:
     #             for layer_num in [1, 2, 3, 4, 5, 6]:
     #                 layers = [layer] * layer_num
-    #                 args = Args(batch_size=batch_size, 
-    #                     num_timesteps=num_timesteps, 
-    #                     num_iters=num_iters, 
-    #                     layers=layers, 
-    #                     unroll=1)
-    #                 print(args)
-    # for batch_size in [64, 128, 256, 512, 1024]:
-    for batch_size in [256, 512]:
-        for num_timesteps in [50, 100, 150, 200, 250, 300]:
-            for layer in [64, 128, 256, 512, 1024]:
-                for layer_num in [1, 2, 3, 4, 5, 6]:
-                    layers = [layer] * layer_num
-                    n = 0
-                    while n <= 10:
-                        if n == 0:
-                            unroll = 1
-                        else:
-                            unroll = math.ceil(0.1 * n * num_timesteps)
-                        args = Args(batch_size=batch_size, 
-                            num_timesteps=num_timesteps, 
-                            num_iters=num_iters, 
-                            layers=layers, 
-                            unroll=unroll)
-                        n += 1
-                        main(args=args)
+    #                 n = 0
+    #                 while n <= 10:
+    #                     if n == 0:
+    #                         unroll = 1
+    #                     else:
+    #                         unroll = math.ceil(0.1 * n * num_timesteps)
+    #                     args = Args(batch_size=batch_size, 
+    #                         num_timesteps=num_timesteps, 
+    #                         num_iters=num_iters, 
+    #                         layers=layers, 
+    #                         unroll=unroll)
+    #                     n += 1
+    #                     main(args=args)
 
 
     # print arguments

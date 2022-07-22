@@ -2,6 +2,7 @@ import math
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
@@ -11,6 +12,8 @@ import optax
 from typing import Sequence, Callable
 
 import equinox as eqx
+
+import xgboost as xgb
 
 class FNN(eqx.Module):
     mlp: eqx.nn.MLP
@@ -102,8 +105,6 @@ class NeuralFBSDE(eqx.Module):
         def step_fn(carry, inp):
             return self.step(carry, inp)
 
-        output = ""
-
         dummy_t0 = 0.0
         dummy_dt = 0.2
 
@@ -116,23 +117,32 @@ class NeuralFBSDE(eqx.Module):
         hlo_module = jax.xla_computation(step_fn)(carry, None).as_hlo_module()
         client = jax.lib.xla_bridge.get_backend()
         step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
-        step_bytes_access_gb = step_cost['bytes accessed'] / 1e9
-        step_flops_g = step_cost['flops'] / 1e9
+        step_bytes_access = step_cost['bytes accessed']
+        step_bytes_access_op0 = step_cost['bytes accessed operand 0 {}']
+        step_bytes_access_op1 = step_cost['bytes accessed operand 1 {}']
+        step_bytes_access_out = step_cost['bytes accessed output {}']
+        step_flops = step_cost['flops']
         
-        # step bytes access in GB
-        output = output + str(step_bytes_access_gb) + ','
-        # step G FLOPS 
-        output = output + str(step_flops_g) + ','
+        features = []
+        # step bytes access
+        features.append(step_bytes_access)
+        features.append(step_bytes_access_op0)
+        features.append(step_bytes_access_op1)
+        features.append(step_bytes_access_out)
+        
+        # step FLOPS 
+        features.append(step_flops)
         # step Arithmetic Intensity
-        output = output + str(step_flops_g / step_bytes_access_gb) + ','
+        features.append(step_flops / step_bytes_access)
 
         total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
 
         # total params
-        output = output + str(total_params / 1e6) + ','
+        features.append(total_params / 1e6)
 
         # hidden_size: the dimension of DE
-        output = output + str(self.hidden_size) + ','
+        features.append(self.hidden_size)
+
         # noise_size: browian motion size ? 
         # TODO should we add this for ODE/CDE？
         # output = output + str(self.noise_size) + ','
@@ -141,9 +151,9 @@ class NeuralFBSDE(eqx.Module):
         # output = output + str(self.width_size) + ','
         
         # depth: depth of MLP
-        output = output + str(self.depth) + ','
+        features.append(self.depth * 2)
 
-        return output
+        return features
 
     def __call__(self, x0, t0, dt, num_timesteps, unroll=1, key=jrandom.PRNGKey(0)):
         
@@ -189,7 +199,7 @@ def train_step(model, x0, t0, dt, num_timesteps, optimizer, opt_state, unroll=1,
     def loss_fn(model):
         loss = 0.0
         
-        out_carry, out_val = jax.vmap(model, in_axes=(0, None, None, None, None, None))(x0, t0, dt, num_timesteps, unroll, key)
+        out_carry, out_val = jax.vmap(model, in_axes=(0, None, None, None, None, 0))(x0, t0, dt, num_timesteps, unroll, key)
         
         (_, _, _, x_final, y_final, z_final, _) = out_carry
         (x, y_tilde_list, y_list) = out_val
@@ -210,13 +220,32 @@ def train_step(model, x0, t0, dt, num_timesteps, optimizer, opt_state, unroll=1,
 
 
 def train(args):
-    start_time = time.time()
+    start_ts = time.time()
 
     learning_rate = 1e-3
     rng = jrandom.PRNGKey(0)
 
     model = NeuralFBSDE(in_size=args.dim + 1, out_size=1, width_size=16, depth=4, noise_size=args.dim, key=rng)
     features = model.make_cost_model_feature()
+    features.append(args.batch_size)
+    features.append(args.num_timesteps)
+
+    compile_model_loaded = xgb.Booster()
+    compile_model_loaded.load_model("../cost-model/ckpt/compile.txt")
+
+    run_model_loaded = xgb.Booster()
+    run_model_loaded.load_model("../cost-model/ckpt/run.txt")
+    
+    unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
+    total_time_pred = []
+    for unroll in unroll_list:
+        cur_features = features + [unroll]
+        
+        compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
+        run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
+        total_time_pred.append(compilation_time_pred + run_time_pred * 10)
+    predicted_unroll = unroll_list[np.argmin(total_time_pred)]
+    print(f"predicted unroll: {predicted_unroll}")
 
     x0 = jnp.array([1.0, 0.5] * int(args.dim / 2))
     x0 = jnp.broadcast_to(x0, (args.batch_size, args.dim))
@@ -224,28 +253,21 @@ def train(args):
     optimizer = optax.adam(learning_rate)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    verbose = True
-
-    for i in range(args.num_iters):
-        rng, _ = jax.random.split(rng)
+    for step in range(args.num_iters):
+        rng, _ = jrandom.split(rng)
+        bm_key = jrandom.split(rng, args.batch_size)
         # data = fetch_minibatch(rng)
-        # jax.vmap(model, in_axes=[0, None, None, None, None, None])(x0, 0.0, 0.01, 100, unroll, rng)
-        loss, model, loss, y_pred = train_step(model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, rng)
+        loss, model, loss, y_pred = train_step(model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
 
-        if verbose:
-            if i == 0:
-                compile_time = time.time()
+        if step == 0:
+            compile_ts = time.time()
         
-    features = features + str(args.batch_size) + ','
-    features = features + str(args.unroll) + ','
-    output = features + str(compile_time - start_time) + ','
-    output = output + str(time.time() - compile_time)
-    print(output)
     
-    # print(f"compile: {compile_time - start_time}")
-    # print(f"run: {time.time() - compile_time}")
-    # output = output + str(compile_time - start_time) + ','
-    # output = output + str(time.time() - compile_time)
+    compile_time = compile_ts - start_ts
+    run_time = time.time() - compile_ts
+    total_time = compile_time + run_time * 10
+
+    print(f"unroll: {args.unroll}, actuall time: {total_time}")
 
 
 @dataclass
@@ -259,19 +281,15 @@ class Args:
     num_iters: int
     
     # network
-    depth: Sequence[int]
+    depth: int
     width_size: int
     
     # dynamic unroll
     unroll: int
     T: float = 1.0
 
-def main(args):
-    train(args)
-    train(args)
-
-
-if __name__ == '__main__':
+def main():
+    unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
     # test code
     args = Args(batch_size=128, 
                 dt=0.2,
@@ -280,7 +298,14 @@ if __name__ == '__main__':
                 num_iters=1000, 
                 depth=3, 
                 width_size=64,
-                unroll=10)
+                unroll=1)
     # warm up run
-    main(args=args)
+    train(args)
+    for unroll in unroll_list:
+        args.unroll = unroll
+        train(args)
+
+
+if __name__ == '__main__':
+    main()
 

@@ -1,9 +1,9 @@
 import time
-from typing import Union
+import math
+from typing import Union, Sequence
 from dataclasses import dataclass
 from functools import partial
 
-import diffrax
 import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import jax
 import jax.nn as jnn
@@ -11,6 +11,11 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
+
+from jax.config import config
+# We use GPU as the default backend.
+# If you want to use cpu as backend, uncomment the following line.
+# config.update("jax_platform_name", "cpu")
 
 def lipswish(x):
     return 0.909 * jnn.silu(x)
@@ -28,7 +33,7 @@ class MuField(eqx.Module):
             out_size=hidden_size,
             width_size=width_size,
             depth=depth,
-            activation=lipswish,
+            activation=jnn.relu,
             final_activation=jnn.tanh,
             key=mlp_key,
         )
@@ -103,10 +108,12 @@ class SDEStep(eqx.Module):
 
         return carry, y1
 
-class NeuralDE(eqx.Module):
+class NeuralSDE(eqx.Module):
     step: SDEStep
     noise_size: int
     hidden_size: int
+    depth: int
+    width_size: int
 
 
     def __init__(
@@ -120,19 +127,19 @@ class NeuralDE(eqx.Module):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        initial_key, step_key, readout_key = jrandom.split(key, 3)
+        step_key, _ = jrandom.split(key, 2)
 
         self.step = SDEStep(noise_size=noise_size, hidden_size=hidden_size, width_size=width_size, depth=depth, key=step_key)
 
         self.noise_size = noise_size
         self.hidden_size = hidden_size
+        self.width_size = width_size
+        self.depth = depth
 
     def make_cost_model_feature(self):
 
         def step_fn(carry, inp):
             return self.step(carry, inp)
-
-        output = ""
 
         dummy_t0 = 0.0
         dummy_dt = 0.1
@@ -142,101 +149,111 @@ class NeuralDE(eqx.Module):
         carry = (0, dummy_t0, dummy_dt, dummy_y0, dummy_bm_key)
         hlo_module = jax.xla_computation(step_fn)(carry, None).as_hlo_module()
         client = jax.lib.xla_bridge.get_backend()
-        step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
-        step_bytes_access_gb = step_cost['bytes accessed'] / 1e9
-        step_flops_g = step_cost['flops'] / 1e9
         
-        # step bytes access in GB
-        output = output + str(step_bytes_access_gb) + ','
-        # step G FLOPS 
-        output = output + str(step_flops_g) + ','
+        step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+        step_bytes_access = step_cost['bytes accessed']
+        step_bytes_access_op0 = step_cost['bytes accessed operand 0 {}']
+        step_bytes_access_op1 = step_cost['bytes accessed operand 1 {}']
+        step_bytes_access_out = step_cost['bytes accessed output {}']
+        step_flops = step_cost['flops']
+        
+        features = []
+        # step bytes access
+        features.append(step_bytes_access)
+        features.append(step_bytes_access_op0)
+        features.append(step_bytes_access_op1)
+        features.append(step_bytes_access_out)
+
+        # step FLOPS 
+        features.append(step_flops)
         # step Arithmetic Intensity
-        output = output + str(step_flops_g / step_bytes_access_gb) + ','
+        features.append(step_flops / step_bytes_access)
 
         total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
 
-        output = output + str(total_params / 1e6) + ','
+        # total params
+        features.append(total_params / 1e6)
 
-        return output
+        # hidden_size: the dimension of DE
+        features.append(self.hidden_size)
 
-    def __call__(self, y0, num_timesteps, ts, key):
-        t0 = ts[0]
-        t1 = ts[-1]
-        dt0 = 1.0
+        # noise_size: browian motion size ? 
+        # TODO should we add this for ODE/CDE？
+        # output = output + str(self.noise_size) + ','
+        
+        # width_size: width for every layer of MLP
+        # output = output + str(self.width_size) + ','
+        
+        # depth: depth of MLP
+        features.append(self.depth * 2)
+
+        return features
+
+    def __call__(self, y0, t0, dt, num_timesteps, unroll, key):
+
         _, bm_key = jrandom.split(key, 2)
 
         def step_fn(carry, inp):
             return self.step(carry, inp)
-        
-        carry = (0, t0, dt0, y0, bm_key)
 
-        _, ys = jax.lax.scan(step_fn, carry, xs=None, length=num_timesteps)
+        # _, ys = jax.lax.scan(step_fn, carry, xs=None, length=num_timesteps, unroll=unroll)
+        ys = solve(step_fn, y0, t0, dt, num_timesteps, unroll, bm_key)
         
         return ys
 
 
 
-def solve(step, y0, t0, dt, num_steps, bm_key):
+def solve(step, y0, t0, dt, num_timesteps, unroll, bm_key):
     carry = (0, t0, dt, y0, bm_key)
 
-    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps)
+    _, ys = jax.lax.scan(step, carry, xs=None, length=num_timesteps, unroll=unroll)
 
     return ys
 
 @eqx.filter_jit
-def train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll, key):
+def loss_fn(model, y0, t0, dt, num_timesteps, unroll, key):
 
-    def loss_fn(model):
-
-        # @partial(jit)
-        # def forward_fn(params, y0, dW, ts, times):
-        #     ys = train_state.apply_fn({'params': params}, y0, dW, ts, times)
-        #     return ys
-
-        # ys = forward_fn(params, y0, dW, ts, times)
-        ys = jax.vmap(model, in_axes=[0, None, None, None])(y0, num_timesteps, ts, key)
-        # dummy loss
-        loss = jnp.sum(jnp.mean(ys, axis=0))
-
-        return loss
-
-    # @eqx.filter_value_and_grad
-    # def grad_loss():
-    #     return loss_fn(model)
-
+    ys = jax.vmap(model, in_axes=[0, None, None, None, None, None])(y0, t0, dt, num_timesteps, unroll, key)
     
-    loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
+    # dummy loss
+    loss = jnp.sum(jnp.mean(ys, axis=0))
+
+    return loss
+
+
+@eqx.filter_value_and_grad
+def grad_loss(model, y0, t0, dt, num_timesteps, unroll, key):
+    return loss_fn(model, y0, t0, dt, num_timesteps, unroll, key)
+
+
+@eqx.filter_jit
+def train_step(model, y0, t0, dt, num_timesteps, optimizer, opt_state, unroll, key):
+   
+    loss, grads = grad_loss(model, y0, t0, dt, num_timesteps, unroll, key)
 
     updates, opt_state = optimizer.update(grads, opt_state)
     model = eqx.apply_updates(model, updates)
 
-    return model, loss
+    return loss, model
 
-def train():
+def train(args):
 
     key = jrandom.PRNGKey(42)
 
-    noise_size = 3
-    hidden_size = 8
-    width_size = 4
-    depth = 5
-    key = jrandom.PRNGKey(0)
-
-    model = NeuralDE(
-            noise_size,
-            hidden_size,
-            width_size,
-            depth,
+    model = NeuralSDE(
+            args.noise_size,
+            args.hidden_size,
+            args.width_size,
+            args.depth,
             key=key,
         )
 
     features = model.make_cost_model_feature()
-    print(features)
+    features.append(args.batch_size)
+    features.append(args.num_timesteps)
+    features.append(args.unroll)
 
-    y0 = jnp.ones((24, hidden_size))
-    num_timesteps = 64
-    # ts = jnp.arange(start=0.0, stop=1.0, step=(1.0 - 0.0) / num_timesteps)
-    ts = jnp.array([0.0, 1.0])
+    y0 = jnp.ones((args.batch_size, args.hidden_size))
 
     learning_rate = 1e-2
     learning_rate_fn = optax.exponential_decay(learning_rate, 1, 0.999)
@@ -246,73 +263,83 @@ def train():
 
     start_time = time.time()
 
-    for step in range(10):
+    for step in range(args.num_iters):
         key, _ = jax.random.split(key)
-        model, loss = train_step(step, model, y0, ts, num_timesteps, optimizer, opt_state, unroll=1, key=key)
+        loss = train_step(model, y0, 0, 0.1, args.num_timesteps, optimizer, opt_state, unroll=args.unroll, key=key)
 
         if step == 0:
             compile_time = time.time()
-            iter_time = time.time()
+            # iter_time = time.time()
         # print(f"iter: {time.time() - iter_time}")
-        iter_time = time.time()
+        # iter_time = time.time()
         # if step % 100 == 0 and step > 0:
         #     iter_time_list.append(time.time() - iter_time)
         #     iter_time = time.time()
+    
+    features.append(compile_time - start_time)
+    features.append(time.time() - compile_time)
+    print(','.join(map(str, features)))
 
-    output = ""
-    output = output + str(compile_time - start_time) + ','
-    output = output + str(time.time() - compile_time)
-    print(output)
+@dataclass
+class Args:
+    batch_size: int
 
-train()
-
-
-# @dataclass
-# class Args:
-#     batch_size: int
-#     dim: int
-#     num_timesteps: int
-#     num_ts: int
-#     num_iters: int
-#     layers: Sequence[int]
-#     unroll: int
-#     T: float = 1.0
-
-
-# def main(args):
-#     train(args)
+    # dim of SDE
+    hidden_size: int
+    noise_size: int 
+    num_timesteps: int
+    num_iters: int
+    
+    # network
+    depth: Sequence[int]
+    width_size: int
+    
+    # dynamic unroll
+    unroll: int
+    T: float = 1.0
 
 
-# if __name__ == '__main__':
-#     # args = Args(batch_size=512, 
-#     #                         dim=2,
-#     #                         num_timesteps=1000,
-#     #                         num_ts=10,
-#     #                         num_iters=1000, 
-#     #                         layers=[256, 256, dim], 
-#     #                         unroll=1)
-#     # main(args=args)
-#     for batch_size in [256]:
-#     # for batch_size in [512]:
-#         for num_timesteps in [200, 250, 300]:
-#             for layer in [128, 256, 512, 1024]:
-#                 for layer_num in [4, 5, 6]:
-#                     for dim in [4, 16, 32, 64]:
-#                         layers = [layer] * layer_num + [dim]
-#                         n = 0
-#                         while n <= 5:
-#                             if n == 0:
-#                                 unroll = 1
-#                             else:
-#                                 unroll = math.ceil(0.1 * n * num_timesteps)
-#                                 if unroll > 100:
-#                                     break
-#                             args = Args(batch_size=batch_size, 
-#                                 dim=dim,
-#                                 num_timesteps=num_timesteps,
-#                                 num_ts=10,
-#                                 num_iters=1000, 
-#                                 layers=layers, 
-#                                 unroll=unroll)
-#                             n += 1
-#                             main(args=args)
+def main():
+    # warm up run
+    args = Args(batch_size=128, 
+            hidden_size=16,
+            noise_size=16,
+            num_timesteps=50,
+            num_iters=1000, 
+            depth=4, 
+            width_size=64,
+            unroll=1)
+    # dummy run
+    train(args)
+
+    for batch_size in [64, 128, 256]:
+    # for batch_size in [128, 256, 512]:
+        for num_timesteps in [50, 100, 200]:
+        # for num_timesteps in [50, 100, 200]:
+            for width_size in [16, 32, 64, 128, 256]:
+            # for width_size in [64, 128, 256, 512, 1024]:
+                for depth in [3, 4, 5, 6]:
+                # for depth in [3, 4, 5, 6]:
+                    for hidden_size in [16, 32, 64]:
+                        n = 0
+                        while n <= 5:
+                            if n == 0:
+                                unroll = 1
+                            else:
+                                unroll = math.ceil(0.1 * n * num_timesteps)
+                                if unroll > 100:
+                                    break
+                            args = Args(batch_size=batch_size, 
+                                hidden_size=hidden_size,
+                                noise_size=hidden_size,
+                                num_timesteps=num_timesteps,
+                                num_iters=1000, 
+                                depth=depth, 
+                                width_size=width_size,
+                                unroll=unroll)
+                            n += 1
+                            train(args=args)
+
+
+if __name__ == '__main__':
+    main()
