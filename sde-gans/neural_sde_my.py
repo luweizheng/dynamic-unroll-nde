@@ -2,6 +2,7 @@ import time
 from typing import Union, Callable
 
 import diffrax
+from diffrax.misc import ω
 import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import jax
 import jax.nn as jnn
@@ -9,6 +10,10 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
+from jax.config import config
+
+# config.update('jax_disable_jit', True)
+
 
 def lipswish(x):
     return 0.909 * jnn.silu(x)
@@ -311,6 +316,38 @@ class SDEStep(eqx.Module):
         carry = (i+1, t0, dt, y1, _key2)
 
         return carry, y1
+    
+
+class CDEStep(eqx.Module):
+    
+    
+    terms: diffrax.MultiTerm
+    solver: diffrax.ReversibleHeun
+    
+    
+    def __init__(self, terms) -> None:
+        super().__init__()
+        self.terms = terms
+        self.solver = diffrax.ReversibleHeun()
+        
+    
+    def __call__(self, carry, input=None):
+        (i, t0, dt, y0, yhat0 ,vf0) = carry
+        # t1 = jnp.full((1, ), t0 + dt)
+        t1 = t0 + dt
+        # if vf0 is None:
+        #     vf0 = self.terms.vf(t0, y0, args=None)
+
+        # vf0 = lambda _: vf0, None
+        vf0 = jax.lax.cond(False, lambda _: self.terms.vf(t0, y0, args=None), lambda _: vf0, None)
+        
+        control = self.terms.contr(t0, t1)
+        yhat1 = (2 * y0**ω - yhat0**ω + self.terms.prod(vf0, control) ** ω).ω
+        vf1 = self.terms.vf(t1, yhat1, args=None)
+        y1 = (y0**ω + 0.5 * self.terms.prod((vf0**ω + vf1**ω).ω, control) ** ω).ω
+        
+        carry = (i + 1, t1, dt, y1, yhat1, vf1)
+        return carry, y1
 
 class NeuralSDE(eqx.Module):
     initial: eqx.nn.MLP
@@ -359,6 +396,7 @@ class NeuralSDE(eqx.Module):
         def step_fn(carry, input):
             return self.step(carry, input)
 
+        
         ys = solve(step_fn, y0, t0, dt0, 64, bm_key)
         
         result = jax.vmap(self.readout)(ys)
@@ -371,6 +409,13 @@ def solve(step, y0, t0, dt, num_steps, bm_key):
 
     _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=1)
 
+    return ys
+
+def solve_cde(step, y0, t0, dt, vf0, num_steps):
+    carry = (0, t0, dt, y0, y0, vf0)
+    
+    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=1)
+    
     return ys
 
 
@@ -392,6 +437,7 @@ class NeuralCDE(eqx.Module):
         self.cvf = ControlledVectorField(
             data_size, hidden_size, width_size, depth, scale=False, key=cvf_key
         )
+        
         self.readout = eqx.nn.Linear(hidden_size, 1, key=readout_key)
 
     def __call__(self, ts, ys):
@@ -404,22 +450,34 @@ class NeuralCDE(eqx.Module):
         vf = diffrax.ODETerm(self.vf)
         cvf = diffrax.ControlTerm(self.cvf, control)
         terms = diffrax.MultiTerm(vf, cvf)
+        step = CDEStep(terms=terms)
         # solver = diffrax.ReversibleHeun()
-        solver = diffrax.Euler()
+        # solver = diffrax.Euler()
         t0 = ts[0]
         t1 = ts[-1]
         dt0 = 1.0
+        
         y0 = self.initial(init)
+        
+        def step_fn(carry, input):
+            return step(carry=carry, input=input)
+        
+        vf0 = terms.vf(t0, y0, args=None)
+        
+        ys = solve_cde(step_fn, y0, t0, dt0, vf0, 64)
+        
         # Have the discriminator produce an output at both `t0` *and* `t1`.
         # The output at `t0` has only seen the initial point of a sample. This gives
         # additional supervision to the distribution learnt for the initial condition.
         # The output at `t1` has seen the entire path of a sample. This is needed to
         # actually learn the evolving trajectory.
-        saveat = diffrax.SaveAt(t0=True, t1=True)
-        sol = diffrax.diffeqsolve(
-            terms, solver, t0, t1, dt0, y0, saveat=saveat, max_steps=64
-        )
-        return jax.vmap(self.readout)(sol.ys)
+        # saveat = diffrax.SaveAt(t0=True, t1=True)
+        # sol = diffrax.diffeqsolve(
+        #     terms, solver, t0, t1, dt0, y0, saveat=saveat, max_steps=64
+        # )
+        result = jax.vmap(self.readout)(ys)
+        
+        return result
 
     @eqx.filter_jit
     def clip_weights(self):
@@ -649,5 +707,8 @@ def main(
     fig.savefig("my_control_5000_neural_sde.png")
     plt.show()
 
+#%%
 
 main()
+
+#%%
