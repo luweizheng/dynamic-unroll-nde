@@ -125,7 +125,8 @@ def single_sample_fn(model, int_beta, data_shape, dt0, t1, key):
         return -0.5 * beta * (y + model(t, y))
 
     term = dfx.ODETerm(drift)
-    solver = dfx.Tsit5()
+    solver = dfx.Euler()
+    # solver = dfx.Tsit5()
     t0 = 0
     y1 = jr.normal(key, data_shape)
     # reverse time, solve from t1 to t0
@@ -184,7 +185,7 @@ def main(
     num_blocks=4,
     t1=10.0,
     # Optimisation hyperparameters
-    num_steps=100_000,
+    num_steps=500_000,
     lr=3e-4,
     batch_size=512,
     print_every=10_000,
@@ -249,6 +250,6 @@ def main(
     plt.imshow(sample, cmap="Greys")
     plt.axis("off")
     plt.tight_layout()
-    plt.savefig(f'{num_steps}.png')
+    plt.savefig(f'euler_{num_steps}.png')
 
 main()

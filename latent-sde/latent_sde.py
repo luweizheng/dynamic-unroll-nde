@@ -26,6 +26,12 @@ Scalar = Union[float, int]
 
 Data = namedtuple('Data', ['ts', 'ts_ext', 'ts_vis', 'ys'])
 
+
+@jax.vmap
+def linear_interpolation(t0, y0, t1, y1, t):
+    y = (t1 - t) / (t1 - t0) * y0 + (t - t0) / (t1 - t0) * y1
+    return y
+
 def prod_diagonal(g, v):
     return g * v
 
@@ -103,13 +109,13 @@ class ForwardSDE(nn.Module):
                 _ys.append(y)
             _ys = jnp.stack(_ys)
         
-        # saveat_indices = jnp.searchsorted(times, ts)
+        saveat_indices = jnp.searchsorted(times, ts)
 
-        # ys = linear_interpolation(ts[0] + ts_indices * self.dt, 
-        #     _ys[ts_indices], 
-        #     ts[0] + (ts_indices + 1) * self.dt, 
-        #     _ys[ts_indices + 1], 
-        #     ts)
+        ys = linear_interpolation(ts[0] + saveat_indices * self.dt, 
+            _ys[saveat_indices], 
+            ts[0] + (saveat_indices + 1) * self.dt, 
+            _ys[saveat_indices + 1], 
+            ts)
         
         dt = self.dt
         
@@ -118,7 +124,7 @@ class ForwardSDE(nn.Module):
         #     times[0] + (saveat_indices) * dt, 
         #     _ys[saveat_indices], 
         #     saveat)
-        return _ys
+        return ys
 
 
 def _stable_division(a, b, epsilon=1e-6):
@@ -245,7 +251,7 @@ class EMAMetric(object):
 
 
 def make_segmented_cosine_data():
-    ts = jnp.concatenate((jnp.linspace(0.3, 0.8, 10), jnp.linspace(1.3, 1.8, 10)), axis=0)
+    ts = jnp.concatenate((jnp.linspace(0.3, 0.8, 10), jnp.linspace(1.2, 1.5, 10)), axis=0)
     ts_ext = jnp.array([0.] + list(ts) + [2.0])
     ts_vis = jnp.linspace(0., 2.0, 300)
     ys = jnp.cos(ts * (2. * math.pi))[:, None]
