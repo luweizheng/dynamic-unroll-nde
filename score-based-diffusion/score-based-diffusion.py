@@ -4,8 +4,10 @@ import gzip
 import os
 import struct
 import urllib.request
+import math
 
 import diffrax as dfx  # https://github.com/patrick-kidger/diffrax
+from diffrax.misc import ω
 import einops  # https://github.com/arogozhnikov/einops
 import jax
 import jax.numpy as jnp
@@ -123,21 +125,46 @@ def single_sample_fn(model, int_beta, data_shape, dt0, t1, key):
     def drift(t, y, args):
         _, beta = jax.jvp(int_beta, (t,), (jnp.ones_like(t),))
         return -0.5 * beta * (y + model(t, y))
+    
+    def step_fn_euler(carry, input=None):
+        (i, t0, y0, dt) = carry
+        t1 = t0 + dt
+        control = dt
+        vf = drift(t0, y0, args=None)
+        vf_prod = jax.tree_map(lambda v: control * v, vf)
+        y1 = (y0**ω + vf_prod** ω).ω
 
-    term = dfx.ODETerm(drift)
-    solver = dfx.Euler()
+        carry = (i+1, t1, y1, dt)
+        return carry, y1
+        
+    def solve(step, t0, y0, dt, num_steps):
+        
+        carry = (0, t0, y0, dt)
+        
+        _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=1)
+        
+        return ys
+        
+
+    # term = dfx.ODETerm(drift)
+    # solver = dfx.Euler()
     # solver = dfx.Tsit5()
-    t0 = 0
+    t0 = 0.0
     y1 = jr.normal(key, data_shape)
+    
+    t0 = jnp.asarray(t0, dtype=jnp.float32)
+    t1 = jnp.asarray(t1, dtype=jnp.float32)
+    dt0 = jnp.asarray(dt0, dtype=jnp.float32)
+    ys = solve(step_fn_euler, t1, y1, -dt0, num_steps=100)
     # reverse time, solve from t1 to t0
-    sol = dfx.diffeqsolve(term, solver, t1, t0, -dt0, y1, adjoint=dfx.NoAdjoint())
-    return sol.ys[0]
+    # sol = dfx.diffeqsolve(term, solver, t1, t0, -dt0, y1, adjoint=dfx.NoAdjoint())
+    return ys[-1]
 
 def mnist():
     filename = "train-images-idx3-ubyte.gz"
     url_dir = "https://storage.googleapis.com/cvdf-datasets/mnist"
     # target_dir = os.getcwd() + "/data/mnist"
-    target_dir = "/home/u20200002/Datasets/MNIST"
+    target_dir = "/home/u2019202265/Datasets/MNIST"
     url = f"{url_dir}/{filename}"
     target = f"{target_dir}/{filename}"
 
@@ -185,7 +212,7 @@ def main(
     num_blocks=4,
     t1=10.0,
     # Optimisation hyperparameters
-    num_steps=500_000,
+    num_steps=100,
     lr=3e-4,
     batch_size=512,
     print_every=10_000,
