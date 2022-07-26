@@ -1,3 +1,4 @@
+import argparse
 import array
 import functools as ft
 import gzip
@@ -6,7 +7,6 @@ import struct
 import urllib.request
 import math
 
-import diffrax as dfx  # https://github.com/patrick-kidger/diffrax
 from diffrax.misc import ω
 import einops  # https://github.com/arogozhnikov/einops
 import jax
@@ -145,10 +145,6 @@ def single_sample_fn(model, int_beta, data_shape, dt0, t1, key):
         
         return ys
         
-
-    # term = dfx.ODETerm(drift)
-    # solver = dfx.Euler()
-    # solver = dfx.Tsit5()
     t0 = 0.0
     y1 = jr.normal(key, data_shape)
     
@@ -157,14 +153,12 @@ def single_sample_fn(model, int_beta, data_shape, dt0, t1, key):
     dt0 = jnp.asarray(dt0, dtype=jnp.float32)
     ys = solve(step_fn_euler, t1, y1, -dt0, num_steps=100)
     # reverse time, solve from t1 to t0
-    # sol = dfx.diffeqsolve(term, solver, t1, t0, -dt0, y1, adjoint=dfx.NoAdjoint())
+
     return ys[-1]
 
-def mnist():
+def mnist(target_dir):
     filename = "train-images-idx3-ubyte.gz"
     url_dir = "https://storage.googleapis.com/cvdf-datasets/mnist"
-    # target_dir = os.getcwd() + "/data/mnist"
-    target_dir = "/home/u2019202265/Datasets/MNIST"
     url = f"{url_dir}/{filename}"
     target = f"{target_dir}/{filename}"
 
@@ -221,10 +215,12 @@ def main(
     sample_size=10,
     # Seed
     seed=5678,
+    data_dir="~/Datasets/MNIST",
+    output_dir="./logs"
 ):
     key = jr.PRNGKey(seed)
     model_key, train_key, loader_key, sample_key = jr.split(key, 4)
-    data = mnist()
+    data = mnist(data_dir)
     data_mean = jnp.mean(data)
     data_std = jnp.std(data)
     data_max = jnp.max(data)
@@ -277,6 +273,16 @@ def main(
     plt.imshow(sample, cmap="Greys")
     plt.axis("off")
     plt.tight_layout()
-    plt.savefig(f'euler_{num_steps}.png')
 
-main()
+    plt_filename = f"{output_dir}/euler_{num_steps}.png"
+    plt.savefig(plt_filename)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir', type=str, default='/home/u20200002/Datasets/MNIST', required=False)
+    parser.add_argument('--output_dir', type=str, default='./logs', required=False)
+    parser.add_argument('--train_iters', type=int, default=1_000, help='Number of iterations for training.')
+    args = parser.parse_args()
+    main(num_steps=args.train_iters,
+        data_dir=args.data_dir,
+        output_dir=args.output_dir)
