@@ -6,4 +6,4 @@ source activate jax
 export CUDA_VISIBLE_DEVICES=1
 export LD_LIBRARY_PATH=~/.conda/envs/jax/lib/:$LD_LIBRARY_PATH
 
-python -u score-based-diffusion.py > logs/euler_500_000.log 2>&1 &
+python -u score-based-diffusion.py --train_iters 1000 > logs/euler_1000.log 2>&1 &
