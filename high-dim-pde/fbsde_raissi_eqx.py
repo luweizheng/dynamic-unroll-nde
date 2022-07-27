@@ -231,10 +231,10 @@ def train(args):
     features.append(args.num_timesteps)
 
     compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/compile.txt")
+    compile_model_loaded.load_model("/home/u2019202265/dynamic-unroll-nde/cost-model/ckpt/compile.txt")
 
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/run.txt")
+    run_model_loaded.load_model("/home/u2019202265/dynamic-unroll-nde/cost-model/ckpt/run.txt")
     
     unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
     total_time_pred = []
