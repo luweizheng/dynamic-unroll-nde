@@ -212,6 +212,7 @@ class FBSDEModel(struct.PyTreeNode):
                 'u_net': u_du_variables['params']
             }
         }
+        
         fbsde_params = freeze(fbsde_params)
 
         opt_state = tx.init(fbsde_params)

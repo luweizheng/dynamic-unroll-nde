@@ -707,6 +707,4 @@ def main(
     fig.savefig("my_control_5000_neural_sde.png")
     plt.show()
 
-#%%
-
 main()
