@@ -63,6 +63,7 @@ class Mixer2d(eqx.Module):
         *,
         key,
     ):
+        
         input_size, height, width = img_size
         assert (height % patch_size) == 0
         assert (width % patch_size) == 0

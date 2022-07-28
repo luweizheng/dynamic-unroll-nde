@@ -274,6 +274,7 @@ def train_step(step, train_state, bm, ts_ext, times, batch_size, ys, unroll, rng
 
         zs = jnp.squeeze(zs)
         zs = zs[1:-1]
+        
 
         logpy = jnp.mean(jnp.sum(jscipy.stats.laplace.logpdf(x=ys, loc=zs, scale=0.05), axis=0), axis=0)
         kl_scheduler = jnp.min(jnp.array([1.0, 1.0 / 100 * step]))
