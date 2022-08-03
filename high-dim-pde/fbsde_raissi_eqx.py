@@ -235,16 +235,36 @@ def train(args):
 
     run_model_loaded = xgb.Booster()
     run_model_loaded.load_model("../cost-model/ckpt/run.txt")
-    
-    unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
-    total_time_pred = []
-    for unroll in unroll_list:
+
+    from scipy.optimize import dual_annealing
+
+    def cost_fn(unroll):
         cur_features = features + [unroll]
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred.append(compilation_time_pred + run_time_pred * 10)
-    predicted_unroll = unroll_list[np.argmin(total_time_pred)]
+        total_time_pred = compilation_time_pred + run_time_pred
+        
+        return total_time_pred
+    
+    bounds = [[2, args.num_timesteps // 2]]
+    result = dual_annealing(cost_fn, bounds, maxiter=1000)
+
+    print('Status : %s' % result['message'])
+    print('Total Evaluations: %d' % result['nfev'])
+    # evaluate solution
+    predicted_unroll = result['fun']
+
+    # iterate a list of candidates
+    # unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
+    # total_time_pred = []
+    # for unroll in unroll_list:
+    #     cur_features = features + [unroll]
+        
+    #     compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
+    #     run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
+    #     total_time_pred.append(compilation_time_pred + run_time_pred * 10)
+    # predicted_unroll = unroll_list[np.argmin(total_time_pred)]
     print(f"predicted unroll: {predicted_unroll}")
 
     x0 = jnp.array([1.0, 0.5] * int(args.dim / 2))
@@ -298,12 +318,12 @@ def main():
                 num_iters=1000, 
                 depth=3, 
                 width_size=64,
-                unroll=1)
+                unroll=20)
     # warm up run
     train(args)
-    for unroll in unroll_list:
-        args.unroll = unroll
-        train(args)
+    # for unroll in unroll_list:
+    #     args.unroll = unroll
+    #     train(args)
 
 
 if __name__ == '__main__':
