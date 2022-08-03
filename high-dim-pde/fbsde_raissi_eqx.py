@@ -152,7 +152,12 @@ class NeuralFBSDE(eqx.Module):
         
         # depth: depth of MLP
         features.append(self.depth * 2)
-
+        features.append(0)
+        features.append(0)
+        features.append(self.depth)
+        features.append(0)
+        
+        
         return features
 
     def __call__(self, x0, t0, dt, num_timesteps, unroll=1, key=jrandom.PRNGKey(0)):
@@ -231,10 +236,10 @@ def train(args):
     features.append(args.num_timesteps)
 
     compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("/home/u2019202265/dynamic-unroll-nde/cost-model/ckpt/compile.txt")
+    compile_model_loaded.load_model("/home/u2019202265/dynamic-unroll-nde/cost-model/ckpt/compile2.txt")
 
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("/home/u2019202265/dynamic-unroll-nde/cost-model/ckpt/run.txt")
+    run_model_loaded.load_model("/home/u2019202265/dynamic-unroll-nde/cost-model/ckpt/run2.txt")
     
     unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
     total_time_pred = []
@@ -296,8 +301,8 @@ def main():
                 dim=100,
                 num_timesteps=100,
                 num_iters=1000, 
-                depth=3, 
-                width_size=64,
+                depth=4, 
+                width_size=128,
                 unroll=1)
     # warm up run
     train(args)

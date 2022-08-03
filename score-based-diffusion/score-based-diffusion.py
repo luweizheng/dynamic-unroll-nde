@@ -5,7 +5,6 @@ import gzip
 import os
 import struct
 import urllib.request
-import math
 
 from diffrax.misc import ω
 import einops  # https://github.com/arogozhnikov/einops
@@ -28,10 +27,10 @@ class MixerBlock(eqx.Module):
     ):
         tkey, ckey = jr.split(key, 2)
         self.patch_mixer = eqx.nn.MLP(
-            num_patches, num_patches, mix_patch_size, depth=1, key=tkey
+            num_patches, num_patches, mix_patch_size, depth=2, key=tkey
         )
         self.hidden_mixer = eqx.nn.MLP(
-            hidden_size, hidden_size, mix_hidden_size, depth=1, key=ckey
+            hidden_size, hidden_size, mix_hidden_size, depth=2, key=ckey
         )
         self.norm1 = eqx.nn.LayerNorm((hidden_size, num_patches))
         self.norm2 = eqx.nn.LayerNorm((num_patches, hidden_size))
@@ -207,7 +206,7 @@ def main(
     num_blocks=4,
     t1=10.0,
     # Optimisation hyperparameters
-    num_steps=100,
+    num_steps=10,
     lr=3e-4,
     batch_size=512,
     print_every=10_000,
@@ -228,7 +227,6 @@ def main(
     data_min = jnp.min(data)
     data_shape = data.shape[1:]
     data = (data - data_mean) / data_std
-
     model = Mixer2d(
         data_shape,
         patch_size,
@@ -280,7 +278,7 @@ def main(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='/home/u20200002/Datasets/MNIST', required=False)
+    parser.add_argument('--data_dir', type=str, default='/home/u2019202265/Datasets/MNIST', required=False)
     parser.add_argument('--output_dir', type=str, default='./logs', required=False)
     parser.add_argument('--train_iters', type=int, default=1_000, help='Number of iterations for training.')
     args = parser.parse_args()

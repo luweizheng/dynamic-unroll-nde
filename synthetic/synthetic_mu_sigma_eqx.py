@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
 
 from jax.config import config
+import itertools
 # We use GPU as the default backend.
 # If you want to use cpu as backend, uncomment the following line.
 # config.update("jax_platform_name", "cpu")
@@ -27,7 +28,6 @@ class MuField(eqx.Module):
     def __init__(self, hidden_size, width_size, depth, *, key, **kwargs):
         super().__init__(**kwargs)
         _, mlp_key = jrandom.split(key)
-        
         self.mlp = eqx.nn.MLP(
             in_size=hidden_size + 1,
             out_size=hidden_size,
@@ -254,7 +254,6 @@ def train(args):
     features.append(args.unroll)
 
     y0 = jnp.ones((args.batch_size, args.hidden_size))
-
     learning_rate = 1e-2
     learning_rate_fn = optax.exponential_decay(learning_rate, 1, 0.999)
     optimizer = optax.adam(learning_rate=learning_rate_fn)
