@@ -1,6 +1,7 @@
 import time
 from typing import Union, Callable
-
+import xgboost as xgb
+import numpy as np
 import diffrax
 from diffrax.misc import ω
 import equinox as eqx  # https://github.com/patrick-kidger/equinox
@@ -11,9 +12,45 @@ import jax.random as jrandom
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
 from jax.config import config
+import argparse
+from dataclasses import dataclass
+
 
 # config.update('jax_disable_jit', True)
 
+    # initial_noise_size=5,
+    # noise_size=3,
+    # hidden_size=16,
+    # width_size=16,
+    # depth=1,
+    # generator_lr=2e-5,
+    # discriminator_lr=1e-4,
+    # batch_size=1024,
+    # steps=1000,
+    # steps_per_print=200,
+    # dataset_size=8192,
+    # seed=5678,
+@dataclass
+class Args:
+    # network
+    initial_noise_size:int
+    noise_size:int
+    hidden_size:int
+    width_size:int
+    depth: int
+    
+    generator_lr:float
+    discriminator_lr:float
+    
+    batch_size: int
+    steps:int
+    steps_per_print:int
+
+    dataset_size:int
+    seed:int
+    
+    # dynamic unroll
+    unroll: int
 
 def lipswish(x):
     return 0.909 * jnn.silu(x)
@@ -78,138 +115,6 @@ class ControlledVectorField(eqx.Module):
         return self.scale * self.mlp(jnp.concatenate([t[None], y])).reshape(
             self.hidden_size, self.control_size
         )
-
-class MyVectorField(eqx.Module):
-    scale: Union[int, jnp.ndarray]
-    mlp: eqx.nn.MLP
-
-    def __init__(self, hidden_size, width_size, depth, scale, *, key, **kwargs):
-        super().__init__(**kwargs)
-        scale_key, mlp_key = jrandom.split(key)
-        if scale:
-            self.scale = jrandom.uniform(
-                scale_key, (hidden_size,), minval=0.9, maxval=1.1
-            )
-        else:
-            self.scale = 1
-        self.mlp = eqx.nn.MLP(
-            in_size=hidden_size + 1,
-            out_size=hidden_size,
-            width_size=width_size,
-            depth=depth,
-            activation=lipswish,
-            final_activation=jnn.tanh,
-            key=mlp_key,
-        )
-
-    def __call__(self, t, y):
-        return self.scale * self.mlp(jnp.concatenate([t, y]))
-
-
-class MyControlledVectorField(eqx.Module):
-    scale: Union[int, jnp.ndarray]
-    mlp: eqx.nn.MLP
-    control_size: int
-    hidden_size: int
-
-    def __init__(
-        self, control_size, hidden_size, width_size, depth, scale, *, key, **kwargs
-    ):
-        super().__init__(**kwargs)
-        scale_key, mlp_key = jrandom.split(key)
-        if scale:
-            self.scale = jrandom.uniform(
-                scale_key, (hidden_size, control_size), minval=0.9, maxval=1.1
-            )
-        else:
-            self.scale = 1
-        self.mlp = eqx.nn.MLP(
-            in_size=hidden_size + 1,
-            out_size=hidden_size * control_size,
-            width_size=width_size,
-            depth=depth,
-            activation=lipswish,
-            final_activation=jnn.tanh,
-            key=mlp_key,
-        )
-        self.control_size = control_size
-        self.hidden_size = hidden_size
-
-    def __call__(self, t, y):
-        return self.scale * self.mlp(jnp.concatenate([t, y])).reshape(
-            self.hidden_size, self.control_size
-        )
-
-
-class MyNeuralSDE(eqx.Module):
-    initial: eqx.nn.MLP
-    vf: MyVectorField  # drift
-    cvf: MyControlledVectorField  # diffusion
-    readout: eqx.nn.Linear
-    initial_noise_size: int
-    noise_size: int
-
-    def __init__(
-        self,
-        data_size,
-        initial_noise_size,
-        noise_size,
-        hidden_size,
-        width_size,
-        depth,
-        *,
-        key,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        initial_key, vf_key, cvf_key, readout_key = jrandom.split(key, 4)
-
-        self.initial = eqx.nn.MLP(
-            initial_noise_size, hidden_size, width_size, depth, key=initial_key
-        )
-        self.vf = MyVectorField(hidden_size, width_size, depth, scale=True, key=vf_key)
-        self.cvf = MyControlledVectorField(
-            noise_size, hidden_size, width_size, depth, scale=True, key=cvf_key
-        )
-        self.readout = eqx.nn.Linear(hidden_size, data_size, key=readout_key)
-
-        self.initial_noise_size = initial_noise_size
-        self.noise_size = noise_size
-
-    def step_fn(self, carry, input):
-        (i, t0, dt, y0, key) = carry
-        t = jnp.full((1, ), t0 + i * dt)
-        _key1, _key2 = jrandom.split(key, 2)
-        bm = jrandom.normal(_key1, (self.noise_size, )) * jnp.sqrt(dt)
-
-        drift_term = self.vf(t=t, y=y0) * dt
-        diffusion_term = jnp.dot(self.cvf(t=t, y=y0), bm)
-
-        y1 = y0 + drift_term + diffusion_term
-
-        carry = (i+1, t0, dt, y1, _key2)
-
-        return carry, y1
-
-    def __call__(self, ts, *, key):
-        t0 = ts[0]
-        t1 = ts[-1]
-        dt0 = 1.0
-        init_key, bm_key = jrandom.split(key, 2)
-        init = jrandom.normal(init_key, (self.initial_noise_size,))
-        control = diffrax.VirtualBrownianTree(
-            t0=t0, t1=t1, tol=dt0 / 2, shape=(self.noise_size,), key=bm_key
-        )
-
-        y0 = self.initial(init)
-
-        carry = (0, t0, dt0, y0, init_key)
-
-        _, ys = jax.lax.scan(self.step_fn, carry, xs=None, length=64, unroll=8)
-        
-        result = jax.vmap(self.readout)(ys)
-        
-        return result
 
 
 class MuField(eqx.Module):
@@ -307,9 +212,6 @@ class SDEStep(eqx.Module):
         t = jnp.full((1, ), t0 + i * dt)
         _key1, _key2 = jrandom.split(key, 2)
         drift_term = self.mf(t=t, y=y0) * dt
-        # 原来的 diffrax 中的布朗运动 self.bm.evaluate()，他封装的比较复杂
-        # diffusion_term = jnp.dot(self.sf(t=t, y=y0), self.bm.evaluate(t0=t))
-        # 我自己写的简单的布朗运动
         bm = jrandom.normal(_key1, (self.noise_size, )) * jnp.sqrt(dt)
         diffusion_term = jnp.dot(self.sf(t=t, y=y0), bm)
         y1 = y0 + drift_term + diffusion_term
@@ -333,12 +235,9 @@ class CDEStep(eqx.Module):
     
     def __call__(self, carry, input=None):
         (i, t0, dt, y0, yhat0 ,vf0) = carry
-        # t1 = jnp.full((1, ), t0 + dt)
-        t1 = t0 + dt
-        # if vf0 is None:
-        #     vf0 = self.terms.vf(t0, y0, args=None)
 
-        # vf0 = lambda _: vf0, None
+        t1 = t0 + dt
+
         vf0 = jax.lax.cond(False, lambda _: self.terms.vf(t0, y0, args=None), lambda _: vf0, None)
         
         control = self.terms.contr(t0, t1)
@@ -355,7 +254,8 @@ class NeuralSDE(eqx.Module):
     readout: eqx.nn.Linear
     initial_noise_size: int
     noise_size: int
-
+    hidden_size:int
+    depth:int
 
     def __init__(
         self,
@@ -382,12 +282,49 @@ class NeuralSDE(eqx.Module):
 
         self.initial_noise_size = initial_noise_size
         self.noise_size = noise_size
+        self.hidden_size = hidden_size
+        self.depth = depth
+        
+    
+    def make_cost_model_feature(self):
+        def step_fn(carry, inp):
+            return self.step(carry, inp)
+        
+        dummy_t0 = 0.0
+        dummy_dt = 0.2
 
+        dummy_init_key, dummy_bm_key = jrandom.split(jrandom.PRNGKey(0), 2)
+        
+        dummy_init = jrandom.normal(dummy_init_key, (self.initial_noise_size,))
+        y0 = self.initial(dummy_init)
+        carry = (0, dummy_t0, dummy_dt, y0, dummy_bm_key)
 
-    def __call__(self, ts, *, key):
+        hlo_module = jax.xla_computation(step_fn)(carry, None).as_hlo_module()
+        client = jax.lib.xla_bridge.get_backend()
+        step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+        step_bytes_access = step_cost['bytes accessed']
+        step_bytes_access_op0 = step_cost['bytes accessed operand 0 {}']
+        step_bytes_access_op1 = step_cost['bytes accessed operand 1 {}']
+        step_bytes_access_out = step_cost['bytes accessed output {}']
+        step_flops = step_cost['flops']
+        
+        features = []
+        features.append(step_bytes_access)
+        features.append(step_bytes_access_op0)
+        features.append(step_bytes_access_op1)
+        features.append(step_bytes_access_out)
+        features.append(step_flops)
+        features.append(step_flops / step_bytes_access)
+        total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+        features.append(total_params / 1e6)
+        features.append(self.hidden_size)
+        features.append(self.depth * 2)
+
+        return features
+
+    def __call__(self, ts, key, unroll):
         t0 = ts[0]
-        t1 = ts[-1]
-        dt0 = 1.0
+        dt0 = 0.1
         init_key, bm_key = jrandom.split(key, 2)
         init = jrandom.normal(init_key, (self.initial_noise_size,))
 
@@ -397,24 +334,24 @@ class NeuralSDE(eqx.Module):
             return self.step(carry, input)
 
         
-        ys = solve(step_fn, y0, t0, dt0, 64, bm_key)
+        ys = solve(step_fn, y0, t0, dt0, 640, bm_key, unroll=unroll)
         
         result = jax.vmap(self.readout)(ys)
         
         return result
 
 
-def solve(step, y0, t0, dt, num_steps, bm_key):
+def solve(step, y0, t0, dt, num_steps, bm_key, unroll=1):
     carry = (0, t0, dt, y0, bm_key)
 
-    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=1)
+    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=unroll)
 
     return ys
 
-def solve_cde(step, y0, t0, dt, vf0, num_steps):
+def solve_cde(step, y0, t0, dt, vf0, num_steps, unroll=1):
     carry = (0, t0, dt, y0, y0, vf0)
     
-    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=1)
+    _, ys = jax.lax.scan(step, carry, xs=None, length=num_steps, unroll=unroll)
     
     return ys
 
@@ -422,9 +359,14 @@ def solve_cde(step, y0, t0, dt, vf0, num_steps):
 
 class NeuralCDE(eqx.Module):
     initial: eqx.nn.MLP
+    data_size:int
+    hidden_size:int
+    width_size:int
+    depth:int
     vf: VectorField
     cvf: ControlledVectorField
     readout: eqx.nn.Linear
+    
 
     def __init__(self, data_size, hidden_size, width_size, depth, *, key, **kwargs):
         super().__init__(**kwargs)
@@ -439,6 +381,48 @@ class NeuralCDE(eqx.Module):
         )
         
         self.readout = eqx.nn.Linear(hidden_size, 1, key=readout_key)
+        self.data_size = data_size
+        self.hidden_size = hidden_size
+        self.width_size = width_size
+        self.depth = depth
+
+    # def make_cost_model_feature(self):
+        
+        
+    #     def step_fn(carry, inp):
+    #         return self.step(carry, inp)
+        
+    #     dummy_t0 = 0.0
+    #     dummy_dt = 0.2
+
+    #     dummy_init_key, dummy_bm_key = jrandom.split(jrandom.PRNGKey(0), 2)
+        
+    #     dummy_init = jrandom.normal(dummy_init_key, (self.initial_noise_size,))
+    #     y0 = self.initial(dummy_init)
+    #     carry = (0, dummy_t0, dummy_dt, y0, dummy_bm_key)
+
+    #     hlo_module = jax.xla_computation(step_fn)(carry, None).as_hlo_module()
+    #     client = jax.lib.xla_bridge.get_backend()
+    #     step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+    #     step_bytes_access = step_cost['bytes accessed']
+    #     step_bytes_access_op0 = step_cost['bytes accessed operand 0 {}']
+    #     step_bytes_access_op1 = step_cost['bytes accessed operand 1 {}']
+    #     step_bytes_access_out = step_cost['bytes accessed output {}']
+    #     step_flops = step_cost['flops']
+        
+    #     features = []
+    #     features.append(step_bytes_access)
+    #     features.append(step_bytes_access_op0)
+    #     features.append(step_bytes_access_op1)
+    #     features.append(step_bytes_access_out)
+    #     features.append(step_flops)
+    #     features.append(step_flops / step_bytes_access)
+    #     total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+    #     features.append(total_params / 1e6)
+    #     features.append(self.hidden_size)
+    #     features.append(self.depth * 2)
+
+    #     return features
 
     def __call__(self, ts, ys):
         # Interpolate data into a continuous path.
@@ -451,12 +435,8 @@ class NeuralCDE(eqx.Module):
         cvf = diffrax.ControlTerm(self.cvf, control)
         terms = diffrax.MultiTerm(vf, cvf)
         step = CDEStep(terms=terms)
-        # solver = diffrax.ReversibleHeun()
-        # solver = diffrax.Euler()
         t0 = ts[0]
-        t1 = ts[-1]
-        dt0 = 1.0
-        
+        dt0 = 0.1
         y0 = self.initial(init)
         
         def step_fn(carry, input):
@@ -464,7 +444,7 @@ class NeuralCDE(eqx.Module):
         
         vf0 = terms.vf(t0, y0, args=None)
         
-        ys = solve_cde(step_fn, y0, t0, dt0, vf0, 64)
+        ys = solve_cde(step_fn, y0, t0, dt0, vf0, 640)
         
         # Have the discriminator produce an output at both `t0` *and* `t1`.
         # The output at `t0` has only seen the initial point of a sample. This gives
@@ -472,9 +452,6 @@ class NeuralCDE(eqx.Module):
         # The output at `t1` has seen the entire path of a sample. This is needed to
         # actually learn the evolving trajectory.
         # saveat = diffrax.SaveAt(t0=True, t1=True)
-        # sol = diffrax.diffeqsolve(
-        #     terms, solver, t0, t1, dt0, y0, saveat=saveat, max_steps=64
-        # )
         result = jax.vmap(self.readout)(ys)
         
         return result
@@ -505,8 +482,8 @@ def get_data(key):
     sigma = 0.4
 
     t0 = 0
-    t1 = 63
-    t_size = 64
+    t1 = 64.0
+    t_size = 640
 
     def drift(t, y, args):
         return mu * t - theta * y
@@ -553,20 +530,20 @@ def dataloader(arrays, batch_size, loop, *, key):
 
 
 @eqx.filter_jit
-def loss(generator, discriminator, ts_i, ys_i, key, step=0):
+def loss(generator, discriminator, ts_i, ys_i, key, unroll, step=0):
     batch_size, _ = ts_i.shape
     key = jrandom.fold_in(key, step)
     key = jrandom.split(key, batch_size)
-    fake_ys_i = jax.vmap(generator)(ts_i, key=key)
+    fake_ys_i = jax.vmap(generator, in_axes=(0, 0, None))(ts_i, key, unroll)
     real_score = jax.vmap(discriminator)(ts_i, ys_i)
     fake_score = jax.vmap(discriminator)(ts_i, fake_ys_i)
     return jnp.mean(real_score - fake_score)
 
 
 @eqx.filter_grad
-def grad_loss(g_d, ts_i, ys_i, key, step):
+def grad_loss(g_d, ts_i, ys_i, key, unroll, step):
     generator, discriminator = g_d
-    return loss(generator, discriminator, ts_i, ys_i, key, step)
+    return loss(generator, discriminator, ts_i, ys_i, key, unroll, step)
 
 
 def increase_update_initial(updates):
@@ -585,9 +562,10 @@ def make_step(
     ts_i,
     ys_i,
     key,
+    unroll,
     step,
 ):
-    g_grad, d_grad = grad_loss((generator, discriminator), ts_i, ys_i, key, step)
+    g_grad, d_grad = grad_loss((generator, discriminator), ts_i, ys_i, key, unroll,step)
     g_updates, g_opt_state = g_optim.update(g_grad, g_opt_state)
     d_updates, d_opt_state = d_optim.update(d_grad, d_opt_state)
     g_updates = increase_update_initial(g_updates)
@@ -598,7 +576,8 @@ def make_step(
     return generator, discriminator, g_opt_state, d_opt_state
 
 
-def main(
+def train(
+    xgb_dir='',
     initial_noise_size=5,
     noise_size=3,
     hidden_size=16,
@@ -607,12 +586,14 @@ def main(
     generator_lr=2e-5,
     discriminator_lr=1e-4,
     batch_size=1024,
+    num_timesteps=640,
     steps=1000,
     steps_per_print=200,
     dataset_size=8192,
     seed=5678,
+    unroll=1,
 ):
-
+    start_ts = time.time()
     key = jrandom.PRNGKey(seed)
     (
         data_key,
@@ -640,6 +621,27 @@ def main(
     discriminator = NeuralCDE(
         data_size, hidden_size, width_size, depth, key=discriminator_key
     )
+    
+    gen_features = generator.make_cost_model_feature()
+    gen_features.append(batch_size)
+    gen_features.append(num_timesteps)
+
+    compile_model_loaded = xgb.Booster()
+    compile_model_loaded.load_model(xgb_dir+"compile.txt")
+
+    run_model_loaded = xgb.Booster()
+    run_model_loaded.load_model(xgb_dir+"run.txt")
+    
+    unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
+    total_time_pred = []
+    for unr in unroll_list:
+        cur_features = gen_features + [unr]
+        
+        compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
+        run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
+        total_time_pred.append(compilation_time_pred + run_time_pred * 10)
+    predicted_unroll = unroll_list[np.argmin(total_time_pred)]
+    print(f"predicted unroll: {predicted_unroll}")
 
     g_optim = optax.rmsprop(generator_lr)
     d_optim = optax.rmsprop(-discriminator_lr)
@@ -650,8 +652,8 @@ def main(
         (ts, ys), batch_size, loop=True, key=dataloader_key
     )
 
-    start_time = time.time()
-    last_iter_time = start_time
+    # start_time = time.time()
+    # last_iter_time = start_time
     for step, (ts_i, ys_i) in zip(range(steps), infinite_dataloader):
         step = jnp.asarray(step)
         generator, discriminator, g_opt_state, d_opt_state = make_step(
@@ -664,51 +666,113 @@ def main(
             ts_i,
             ys_i,
             key,
+            unroll,
             step,
         )
-        if (step % steps_per_print) == 0 or step == steps - 1:
-            total_score = 0
-            num_batches = 0
-            for ts_i, ys_i in dataloader(
-                (ts, ys), batch_size, loop=False, key=evaluate_key
-            ):
-                score = loss(generator, discriminator, ts_i, ys_i, sample_key)
-                total_score += score.item()
-                num_batches += 1
-            print(f"Step: {step}, Iter Time: {time.time() - last_iter_time: .3f}, Loss: {total_score / num_batches}")
-            last_iter_time = time.time()
+        if step == 0:
+            compile_ts = time.time()
+        # if (step % steps_per_print) == 0 or step == steps - 1:
+        #     total_score = 0
+        #     num_batches = 0
+        #     for ts_i, ys_i in dataloader(
+        #         (ts, ys), batch_size, loop=False, key=evaluate_key
+        #     ):
+        #         score = loss(generator, discriminator, ts_i, ys_i, sample_key)
+        #         total_score += score.item()
+        #         num_batches += 1
+        #     print(f"Step: {step}, Iter Time: {time.time() - last_iter_time: .3f}, Loss: {total_score / num_batches}")
+        #     last_iter_time = time.time()
 
     # Plot samples
-    fig, ax = plt.subplots()
-    num_samples = min(50, dataset_size)
-    ts_to_plot = ts[:num_samples]
-    ys_to_plot = ys[:num_samples]
+    # fig, ax = plt.subplots()
+    # num_samples = min(50, dataset_size)
+    # ts_to_plot = ts[:num_samples]
+    # ys_to_plot = ys[:num_samples]
 
-    def _interp(ti, yi):
-        return diffrax.linear_interpolation(
-            ti, yi, replace_nans_at_start=0.0, fill_forward_nans_at_end=True
-        )
+    # def _interp(ti, yi):
+    #     return diffrax.linear_interpolation(
+    #         ti, yi, replace_nans_at_start=0.0, fill_forward_nans_at_end=True
+    #     )
 
-    ys_to_plot = jax.vmap(_interp)(ts_to_plot, ys_to_plot)[..., 0]
-    ys_sampled = jax.vmap(generator)(
-        ts_to_plot, key=jrandom.split(sample_key, num_samples)
-    )[..., 0]
-    kwargs = dict(label="Real")
-    for ti, yi in zip(ts_to_plot, ys_to_plot):
-        ax.plot(ti, yi, c="dodgerblue", linewidth=0.5, alpha=0.7, **kwargs)
-        kwargs = {}
-    kwargs = dict(label="Generated")
-    for ti, yi in zip(ts_to_plot, ys_sampled):
-        ax.plot(ti, yi, c="crimson", linewidth=0.5, alpha=0.7, **kwargs)
-        kwargs = {}
-    ax.set_title(f"{num_samples} samples from both real and generated distributions.")
-    fig.legend()
-    fig.tight_layout()
-    fig.savefig("my_control_5000_neural_sde.png")
-    plt.show()
+    # ys_to_plot = jax.vmap(_interp)(ts_to_plot, ys_to_plot)[..., 0]
+    # ys_sampled = jax.vmap(generator)(
+    #     ts_to_plot, key=jrandom.split(sample_key, num_samples)
+    # )[..., 0]
+    # kwargs = dict(label="Real")
+    # for ti, yi in zip(ts_to_plot, ys_to_plot):
+    #     ax.plot(ti, yi, c="dodgerblue", linewidth=0.5, alpha=0.7, **kwargs)
+    #     kwargs = {}
+    # kwargs = dict(label="Generated")
+    # for ti, yi in zip(ts_to_plot, ys_sampled):
+    #     ax.plot(ti, yi, c="crimson", linewidth=0.5, alpha=0.7, **kwargs)
+    #     kwargs = {}
+    # ax.set_title(f"{num_samples} samples from both real and generated distributions.")
+    # fig.legend()
+    # fig.tight_layout()
+    # fig.savefig("./my_control_5000_neural_sde2.png")
+    # plt.show()
+    compile_time = compile_ts - start_ts
+    run_time = time.time() - compile_ts
+    total_time = compile_time + run_time * 10
 
-#%%
+    print(f"unroll: {unroll}, actuall time: {total_time}")
 
-main()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--xgb-dir', type=str, default='/home/u2019202265/dynamic-unroll-nde/cost-model/ckpt/')
+    parser.add_argument('--initial-noise-size', type=int, default=5)
+    parser.add_argument('--noise-size', type=int, default=3)
+    parser.add_argument('--hidden-size', type=int, default=16)
+    parser.add_argument('--width-size', type=int, default=16)
+    parser.add_argument('--depth', type=int, default=1)
+    parser.add_argument('--generator-lr', type=float, default=2e-5)
+    parser.add_argument('--discriminator-lr', type=float, default=1e-4)
+    parser.add_argument('--batch-size', type=int, default=1024)
+    parser.add_argument('--num-timesteps', type=int, default=640) 
+    parser.add_argument('--steps', type=int, default=1000, help="num_iters")
+    parser.add_argument('--steps-per-print', type=int, default=200)
+    parser.add_argument('--dataset-size', type=int, default=8192)
+    parser.add_argument('--seed', type=int, default=5678)
+    parser.add_argument('--unroll', type=int, default=1)
+    parser.add_argument('--t0', type=float, default=0.0, required=False)
+    parser.add_argument('--t1', type=float, default=64.0, required=False)
+    unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
+    # test code
+    args = parser.parse_args()
+    # warm up run
+    train(xgb_dir=args.xgb_dir,
+          initial_noise_size=args.initial_noise_size,
+          noise_size=args.noise_size,
+          hidden_size=args.hidden_size,
+          width_size=args.width_size,
+          depth=args.depth,
+          generator_lr=args.generator_lr,
+          discriminator_lr=args.discriminator_lr,
+          batch_size=args.batch_size,
+          num_timesteps=args.num_timesteps,
+          steps=args.steps,
+          steps_per_print=args.steps_per_print,
+          dataset_size=args.dataset_size,
+          seed=args.seed,
+          unroll=args.unroll)
+    for unroll in unroll_list:
+        args.unroll = unroll
+        train(xgb_dir=args.xgb_dir,
+            initial_noise_size=args.initial_noise_size,
+            noise_size=args.noise_size,
+            hidden_size=args.hidden_size,
+            width_size=args.width_size,
+            depth=args.depth,
+            generator_lr=args.generator_lr,
+            discriminator_lr=args.discriminator_lr,
+            batch_size=args.batch_size,
+            num_timesteps=args.num_timesteps,
+            steps=args.steps,
+            steps_per_print=args.steps_per_print,
+            dataset_size=args.dataset_size,
+            seed=args.seed,
+            unroll=args.unroll)
 
-#%%
+
+if __name__ == '__main__':
+    main()

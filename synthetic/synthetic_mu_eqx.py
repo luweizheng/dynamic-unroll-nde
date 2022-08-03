@@ -4,7 +4,6 @@ from typing import Union, Sequence
 from dataclasses import dataclass
 from functools import partial
 
-import diffrax
 import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import jax
 import jax.nn as jnn
@@ -140,8 +139,6 @@ class NeuralSDE(eqx.Module):
         def step_fn(carry, inp):
             return self.step(carry, inp)
 
-        output = ""
-
         dummy_t0 = 0.0
         dummy_dt = 0.1
 
@@ -151,32 +148,44 @@ class NeuralSDE(eqx.Module):
         hlo_module = jax.xla_computation(step_fn)(carry, None).as_hlo_module()
         client = jax.lib.xla_bridge.get_backend()
         step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
-        step_bytes_access_gb = step_cost['bytes accessed'] / 1e9
-        step_flops_g = step_cost['flops'] / 1e9
         
-        # step bytes access in GB
-        output = output + str(step_bytes_access_gb) + ','
-        # step G FLOPS 
-        output = output + str(step_flops_g) + ','
+        step_bytes_access = step_cost['bytes accessed']
+        step_bytes_access_op0 = step_cost['bytes accessed operand 0 {}']
+        step_bytes_access_op1 = step_cost['bytes accessed operand 1 {}']
+        step_bytes_access_out = step_cost['bytes accessed output {}']
+        step_flops = step_cost['flops']
+        
+        features = []
+        # step bytes access
+        features.append(step_bytes_access)
+        features.append(step_bytes_access_op0)
+        features.append(step_bytes_access_op1)
+        features.append(step_bytes_access_out)
+
+        # step FLOPS 
+        features.append(step_flops)
         # step Arithmetic Intensity
-        output = output + str(step_flops_g / step_bytes_access_gb) + ','
+        features.append(step_flops / step_bytes_access)
 
         total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
 
         # total params
-        output = output + str(total_params / 1e6) + ','
+        features.append(total_params / 1e6)
 
         # hidden_size: the dimension of DE
-        output = output + str(self.hidden_size) + ','
+        features.append(self.hidden_size)
+
         # noise_size: browian motion size ? 
         # TODO should we add this for ODE/CDE？
         # output = output + str(self.noise_size) + ','
+        
         # width_size: width for every layer of MLP
-        output = output + str(self.width_size) + ','
+        # output = output + str(self.width_size) + ','
+        
         # depth: depth of MLP
-        output = output + str(self.depth) + ','
+        features.append(self.depth * 2)
 
-        return output
+        return features
 
     def __call__(self, y0, t0, dt, num_timesteps, unroll, key):
 
@@ -240,6 +249,9 @@ def train(args):
         )
 
     features = model.make_cost_model_feature()
+    features.append(args.batch_size)
+    features.append(args.num_timesteps)
+    features.append(args.unroll)
 
     y0 = jnp.ones((args.batch_size, args.hidden_size))
 
@@ -263,11 +275,10 @@ def train(args):
         # if step % 100 == 0 and step > 0:
         #     iter_time_list.append(time.time() - iter_time)
         #     iter_time = time.time()
-    features = features + str(args.batch_size) + ','
-    features = features + str(args.unroll) + ','
-    output = features + str(compile_time - start_time) + ','
-    output = output + str(time.time() - compile_time)
-    print(output)
+    
+    features.append(compile_time - start_time)
+    features.append(time.time() - compile_time)
+    print(','.join(map(str, features)))
 
 @dataclass
 class Args:
@@ -295,22 +306,22 @@ def main(args):
 if __name__ == '__main__':
     # test code
     args = Args(batch_size=128, 
-                        hidden_size=16,
-                        noise_size=16,
-                        num_timesteps=50,
-                        num_iters=1000, 
-                        depth=3, 
-                        width_size=64,
-                        unroll=1)
+            hidden_size=16,
+            noise_size=16,
+            num_timesteps=50,
+            num_iters=1000, 
+            depth=3, 
+            width_size=64,
+            unroll=1)
     # warm up run
     main(args=args)
     # for batch_size in [512]:
-    for batch_size in [128, 256, 512]:
-        # for num_timesteps in [50]:
+    for batch_size in [64, 128, 256]:
+    #     # for num_timesteps in [50]:
         for num_timesteps in [50, 100, 200]:
-            # for width_size in [64]:
-            for width_size in [64, 128, 256, 512, 1024]:
-                # for depth in [3]:
+    #         # for width_size in [64]:
+            for width_size in [16, 64, 128, 256, 512]:
+    #             # for depth in [3]:
                 for depth in [3, 4, 5, 6]:
                     for hidden_size in [16, 32, 64]:
                         n = 0

@@ -1,0 +1,1 @@
+python -u ode_mnist_eqx.py > logs/ode.log 2>&1 &

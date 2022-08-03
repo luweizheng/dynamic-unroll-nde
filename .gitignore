@@ -63,3 +63,5 @@ test.db
 
 # Logs
 */logs/
+
+*/.data/
