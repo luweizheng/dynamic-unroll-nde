@@ -83,8 +83,8 @@ class ODEBlock(eqx.Module):
         self.odefunc = odefunc
         self.integration_time = jnp.asarray([0.0, 1.0])
         self.t0 = 0.0
-        self.dt = 0.1
-        self.num_timesteps=10 
+        self.dt = 0.01
+        self.num_timesteps=100 
         
     def step(self, carry, input=None):
         (i, t0, dt, y0) = carry 
@@ -118,7 +118,7 @@ class ODENet(eqx.Module):
         keys = jr.split(key, 5)
         self.downsampling_layers = [
             #32 224
-            eqx.nn.Conv2d(1, 64, 3, 1, key=keys[0]),
+            eqx.nn.Conv2d(3, 64, 3, 1, key=keys[0]),
             eqx.nn.GroupNorm(32, 64),
             jnn.relu,
             eqx.nn.Conv2d(64, 64, 4, 2, 1, key=keys[1]),
@@ -127,7 +127,7 @@ class ODENet(eqx.Module):
             eqx.nn.Conv2d(64, 64, 4, 2, 1, key=keys[2]),
         ]
         self.feature_layers = [ODEBlock(ODEfunc(64, key=keys[3]))] 
-        self.fc_layers = [eqx.nn.GroupNorm(32, 64), jnn.relu, eqx.nn.AvgPool2D((6, 6), stride=1), Flatten(), eqx.nn.Linear(64, 10, key=keys[4])]
+        self.fc_layers = [eqx.nn.GroupNorm(32, 64), jnn.relu, eqx.nn.AvgPool2D((6, 6), stride=1), Flatten(), eqx.nn.Linear(256, 10, key=keys[4])]
     def __call__(self, x):
         for dl in self.downsampling_layers:
             x = dl(x)
@@ -155,7 +155,7 @@ def batch_loss_fn(model, images, labels):
     return loss
     
 
-def get_mnist_loaders(data_aug=False, batch_size=128, test_batch_size=1000, perc=1.0):
+def get_cifar10_loaders(data_aug=False, batch_size=128, test_batch_size=1000, perc=1.0):
     if data_aug:
         transform_train = transforms.Compose([
             transforms.RandomCrop(28, padding=4),
@@ -171,18 +171,18 @@ def get_mnist_loaders(data_aug=False, batch_size=128, test_batch_size=1000, perc
     ])
 
     train_loader = DataLoader(
-        datasets.MNIST(root='.data/mnist', train=True, download=True, transform=transform_train), batch_size=batch_size,
+        datasets.CIFAR10(root='.data/cifar10', train=True, download=True, transform=transform_train), batch_size=batch_size,
         shuffle=True, num_workers=2, drop_last=True
     )
 
 
     train_eval_loader = DataLoader(
-        datasets.MNIST(root='.data/mnist', train=True, download=True, transform=transform_test),
+        datasets.CIFAR10(root='.data/cifar10', train=True, download=True, transform=transform_test),
         batch_size=test_batch_size, shuffle=False, num_workers=2, drop_last=True
     )
 
     test_loader = DataLoader(
-        datasets.MNIST(root='.data/mnist', train=False, download=True, transform=transform_test),
+        datasets.CIFAR10(root='.data/cifar10', train=False, download=True, transform=transform_test),
         batch_size=test_batch_size, shuffle=False, num_workers=2, drop_last=True
     )
 
@@ -214,7 +214,7 @@ def accuracy(model, dataset_loader):
     return total_correct / len(dataset_loader.dataset)
 
 def train(args):
-    train_loader, test_loader, train_eval_loader = get_mnist_loaders(
+    train_loader, test_loader, train_eval_loader = get_cifar10_loaders(
         args.data_aug, args.batch_size, args.test_batch_size
     )
     

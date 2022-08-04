@@ -17,8 +17,11 @@ import itertools
 # If you want to use cpu as backend, uncomment the following line.
 # config.update("jax_platform_name", "cpu")
 
+import os
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+
 def lipswish(x):
-    return 0.909 * jnn.silu(x)
+    return 0.909 * jnn.silu(x)  
 
 
 class MuField(eqx.Module):
@@ -353,7 +356,7 @@ def main():
 
     for batch_size in [64, 128, 256]:
         for num_timesteps in [50, 100, 200]:
-            for depth in [6]:
+            for depth in [3,4,5,6]:
                 width_size_lists = [list(perm) for perm in itertools.combinations_with_replacement(width_sizes, depth) if sorted(perm) == list(perm)]
                 for hidden_size in [16, 32, 64]:
                     for width_size_list in width_size_lists:
