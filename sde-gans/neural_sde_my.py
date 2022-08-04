@@ -387,8 +387,6 @@ class NeuralCDE(eqx.Module):
         self.depth = depth
 
     # def make_cost_model_feature(self):
-        
-        
     #     def step_fn(carry, inp):
     #         return self.step(carry, inp)
         
@@ -634,7 +632,7 @@ def train(
     run_model_loaded = xgb.Booster()
     run_model_loaded.load_model(xgb_dir+"run.txt")
 
-    def raw_cost_fn(features ,unroll):
+    def raw_cost_fn(features, unroll):
         cur_features = features + [unroll]
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
@@ -681,79 +679,79 @@ def train(
 
     # train
     # 为了测试上面的cost model，先把下面的注释，下面这部分太浪费时间
-    # g_optim = optax.rmsprop(generator_lr)
-    # d_optim = optax.rmsprop(-discriminator_lr)
-    # g_opt_state = g_optim.init(eqx.filter(generator, eqx.is_inexact_array))
-    # d_opt_state = d_optim.init(eqx.filter(discriminator, eqx.is_inexact_array))
+    g_optim = optax.rmsprop(generator_lr)
+    d_optim = optax.rmsprop(-discriminator_lr)
+    g_opt_state = g_optim.init(eqx.filter(generator, eqx.is_inexact_array))
+    d_opt_state = d_optim.init(eqx.filter(discriminator, eqx.is_inexact_array))
 
-    # infinite_dataloader = dataloader(
-    #     (ts, ys), batch_size, loop=True, key=dataloader_key
-    # )
+    infinite_dataloader = dataloader(
+        (ts, ys), batch_size, loop=True, key=dataloader_key
+    )
 
-    # # start_time = time.time()
-    # # last_iter_time = start_time
-    # for step, (ts_i, ys_i) in zip(range(steps), infinite_dataloader):
-    #     step = jnp.asarray(step)
-    #     generator, discriminator, g_opt_state, d_opt_state = make_step(
-    #         generator,
-    #         discriminator,
-    #         g_opt_state,
-    #         d_opt_state,
-    #         g_optim,
-    #         d_optim,
-    #         ts_i,
-    #         ys_i,
-    #         key,
-    #         unroll,
-    #         step,
+    # start_time = time.time()
+    # last_iter_time = start_time
+    for step, (ts_i, ys_i) in zip(range(steps), infinite_dataloader):
+        step = jnp.asarray(step)
+        generator, discriminator, g_opt_state, d_opt_state = make_step(
+            generator,
+            discriminator,
+            g_opt_state,
+            d_opt_state,
+            g_optim,
+            d_optim,
+            ts_i,
+            ys_i,
+            key,
+            unroll,
+            step,
+        )
+        if step == 0:
+            compile_ts = time.time()
+        # if (step % steps_per_print) == 0 or step == steps - 1:
+        #     total_score = 0
+        #     num_batches = 0
+        #     for ts_i, ys_i in dataloader(
+        #         (ts, ys), batch_size, loop=False, key=evaluate_key
+        #     ):
+        #         score = loss(generator, discriminator, ts_i, ys_i, sample_key)
+        #         total_score += score.item()
+        #         num_batches += 1
+        #     print(f"Step: {step}, Iter Time: {time.time() - last_iter_time: .3f}, Loss: {total_score / num_batches}")
+        #     last_iter_time = time.time()
+
+    # Plot samples
+    # fig, ax = plt.subplots()
+    # num_samples = min(50, dataset_size)
+    # ts_to_plot = ts[:num_samples]
+    # ys_to_plot = ys[:num_samples]
+
+    # def _interp(ti, yi):
+    #     return diffrax.linear_interpolation(
+    #         ti, yi, replace_nans_at_start=0.0, fill_forward_nans_at_end=True
     #     )
-    #     if step == 0:
-    #         compile_ts = time.time()
-    #     # if (step % steps_per_print) == 0 or step == steps - 1:
-    #     #     total_score = 0
-    #     #     num_batches = 0
-    #     #     for ts_i, ys_i in dataloader(
-    #     #         (ts, ys), batch_size, loop=False, key=evaluate_key
-    #     #     ):
-    #     #         score = loss(generator, discriminator, ts_i, ys_i, sample_key)
-    #     #         total_score += score.item()
-    #     #         num_batches += 1
-    #     #     print(f"Step: {step}, Iter Time: {time.time() - last_iter_time: .3f}, Loss: {total_score / num_batches}")
-    #     #     last_iter_time = time.time()
 
-    # # Plot samples
-    # # fig, ax = plt.subplots()
-    # # num_samples = min(50, dataset_size)
-    # # ts_to_plot = ts[:num_samples]
-    # # ys_to_plot = ys[:num_samples]
+    # ys_to_plot = jax.vmap(_interp)(ts_to_plot, ys_to_plot)[..., 0]
+    # ys_sampled = jax.vmap(generator)(
+    #     ts_to_plot, key=jrandom.split(sample_key, num_samples)
+    # )[..., 0]
+    # kwargs = dict(label="Real")
+    # for ti, yi in zip(ts_to_plot, ys_to_plot):
+    #     ax.plot(ti, yi, c="dodgerblue", linewidth=0.5, alpha=0.7, **kwargs)
+    #     kwargs = {}
+    # kwargs = dict(label="Generated")
+    # for ti, yi in zip(ts_to_plot, ys_sampled):
+    #     ax.plot(ti, yi, c="crimson", linewidth=0.5, alpha=0.7, **kwargs)
+    #     kwargs = {}
+    # ax.set_title(f"{num_samples} samples from both real and generated distributions.")
+    # fig.legend()
+    # fig.tight_layout()
+    # fig.savefig("./my_control_5000_neural_sde2.png")
+    # plt.show()
+    compile_time = compile_ts - start_ts
+    run_time = time.time() - compile_ts
+    total_time = compile_time + run_time * 10
 
-    # # def _interp(ti, yi):
-    # #     return diffrax.linear_interpolation(
-    # #         ti, yi, replace_nans_at_start=0.0, fill_forward_nans_at_end=True
-    # #     )
-
-    # # ys_to_plot = jax.vmap(_interp)(ts_to_plot, ys_to_plot)[..., 0]
-    # # ys_sampled = jax.vmap(generator)(
-    # #     ts_to_plot, key=jrandom.split(sample_key, num_samples)
-    # # )[..., 0]
-    # # kwargs = dict(label="Real")
-    # # for ti, yi in zip(ts_to_plot, ys_to_plot):
-    # #     ax.plot(ti, yi, c="dodgerblue", linewidth=0.5, alpha=0.7, **kwargs)
-    # #     kwargs = {}
-    # # kwargs = dict(label="Generated")
-    # # for ti, yi in zip(ts_to_plot, ys_sampled):
-    # #     ax.plot(ti, yi, c="crimson", linewidth=0.5, alpha=0.7, **kwargs)
-    # #     kwargs = {}
-    # # ax.set_title(f"{num_samples} samples from both real and generated distributions.")
-    # # fig.legend()
-    # # fig.tight_layout()
-    # # fig.savefig("./my_control_5000_neural_sde2.png")
-    # # plt.show()
-    # compile_time = compile_ts - start_ts
-    # run_time = time.time() - compile_ts
-    # total_time = compile_time + run_time * 10
-
-    # print(f"unroll: {unroll}, actuall time: {total_time}")
+    print(f"unroll: {unroll}, actuall time: {total_time}")
 
 def main():
     parser = argparse.ArgumentParser()

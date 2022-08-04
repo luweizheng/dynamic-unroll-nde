@@ -9,6 +9,7 @@ import equinox as eqx
 import os
 import argparse
 import logging
+import math
 import time
 from torch.utils.data import DataLoader
 import torchvision.datasets as datasets
@@ -55,6 +56,7 @@ class ODEfunc(eqx.Module):
         self.norm3 = eqx.nn.GroupNorm(32, dim)
 
     def __call__(self, t, x):
+        out = x
         out = self.norm1(x)
         out = self.relu(out)
         out = self.conv1(t, out)
@@ -67,7 +69,6 @@ class ODEfunc(eqx.Module):
 
 def solve(step, y0, t0, dt, num_timesteps, unroll=1):
     carry = (0, t0, dt, y0)
-
     _, ys = jax.lax.scan(step, carry, xs=None, length=num_timesteps, unroll=unroll)
 
     return ys[-1]
@@ -97,8 +98,8 @@ class ODEBlock(eqx.Module):
         return carry, y1
 
     
-    def __call__(self, y0):
-        ys = solve(self.step, y0, self.t0, self.dt, num_timesteps=self.num_timesteps)
+    def __call__(self, y0, unroll=1):
+        ys = solve(self.step, y0, self.t0, self.dt, num_timesteps=self.num_timesteps, unroll=unroll)
         return ys
 
 
@@ -128,11 +129,11 @@ class ODENet(eqx.Module):
         ]
         self.feature_layers = [ODEBlock(ODEfunc(64, key=keys[3]))] 
         self.fc_layers = [eqx.nn.GroupNorm(32, 64), jnn.relu, eqx.nn.AvgPool2D((6, 6), stride=1), Flatten(), eqx.nn.Linear(256, 10, key=keys[4])]
-    def __call__(self, x):
+    def __call__(self, x, unroll):
         for dl in self.downsampling_layers:
             x = dl(x)
         for fl in self.feature_layers:
-            x = fl(x)
+            x = fl(x, unroll=unroll)
             
         for fc in self.fc_layers:
             x = fc(x)
@@ -140,17 +141,17 @@ class ODENet(eqx.Module):
         return x
 
 @eqx.filter_jit
-def single_loss_fn(model, image, label):
-    logits = model(image)
+def single_loss_fn(model, unroll, image, label):
+    logits = model(image, unroll)
     loss = optax.softmax_cross_entropy(logits=logits, labels=label)
     return loss
 
 @eqx.filter_value_and_grad
-def batch_loss_fn(model, images, labels):
-    loss_fn = ft.partial(single_loss_fn, model)
+def batch_loss_fn(model, images, labels, unroll):
+    loss_fn = ft.partial(single_loss_fn, model, unroll)
     loss_fn = jax.vmap(loss_fn, in_axes=[0,0])
     # logits = jax.vmap(model, in_axes=0)(images)
-    labels = jnn.one_hot(labels, 10)
+    labels = jnn.one_hot(labels, 1)
     loss = jnp.mean(loss_fn(images, labels))
     return loss
     
@@ -171,19 +172,19 @@ def get_cifar10_loaders(data_aug=False, batch_size=128, test_batch_size=1000, pe
     ])
 
     train_loader = DataLoader(
-        datasets.CIFAR10(root='.data/cifar10', train=True, download=True, transform=transform_train), batch_size=batch_size,
-        shuffle=True, num_workers=2, drop_last=True
+        datasets.CIFAR10(root='.data/cifar10', train=True, transform=transform_train), batch_size=batch_size,
+        shuffle=True, num_workers=32, drop_last=True
     )
 
 
     train_eval_loader = DataLoader(
-        datasets.CIFAR10(root='.data/cifar10', train=True, download=True, transform=transform_test),
-        batch_size=test_batch_size, shuffle=False, num_workers=2, drop_last=True
+        datasets.CIFAR10(root='.data/cifar10', train=True, transform=transform_test),
+        batch_size=test_batch_size, shuffle=False, num_workers=16, drop_last=True
     )
 
     test_loader = DataLoader(
-        datasets.CIFAR10(root='.data/cifar10', train=False, download=True, transform=transform_test),
-        batch_size=test_batch_size, shuffle=False, num_workers=2, drop_last=True
+        datasets.CIFAR10(root='.data/cifar10', train=False, transform=transform_test),
+        batch_size=test_batch_size, shuffle=False, num_workers=16, drop_last=True
     )
 
     return train_loader, test_loader, train_eval_loader
@@ -200,20 +201,31 @@ def inf_generator(iterable):
         except StopIteration:
             iterator = iterable.__iter__()
 
+
 def accuracy(model, dataset_loader):
     total_correct = 0
     for x, y in dataset_loader:
         x = jnp.asarray(x, dtype=jnp.float32)
         y = jnp.asarray(y)
         y = jnn.one_hot(y, 10)
-        logits = jax.vmap(model, in_axes=0)(x)
+        logits = jax.vmap(model, in_axes=(0, None))(x, 10)
         target_class = jnp.argmax(y, axis=1)
         # logits = jnp.squeeze(logits, axis=1)
         predicted_class = jnp.argmax(logits, axis=1)
         total_correct += jnp.sum(predicted_class == target_class)
     return total_correct / len(dataset_loader.dataset)
 
+
+@eqx.filter_jit
+def train_step(model, x, y, opt, opt_state, unroll):
+    _ , grads = batch_loss_fn(model, x, y, unroll=unroll)
+    updates, opt_state = opt.update(grads, opt_state)
+    model = eqx.apply_updates(model, updates)
+
+    return model
+
 def train(args):
+    print(f"unroll: {args.unroll}")
     train_loader, test_loader, train_eval_loader = get_cifar10_loaders(
         args.data_aug, args.batch_size, args.test_batch_size
     )
@@ -229,25 +241,38 @@ def train(args):
         x, y = data_gen.__next__()
         x = jnp.asarray(x, dtype=jnp.float32)
         y = jnp.asarray(y, dtype=jnp.float32)
-        _ , grads = batch_loss_fn(model, x, y)
-        updates, opt_state = opt.update(grads, opt_state)
-        model = eqx.apply_updates(model, updates)
-        if itr % batches_per_epoch == 0:
-            train_acc = accuracy(model, train_eval_loader)
-            val_acc = accuracy(model, test_loader)
+        if itr == 0:
+            start_time = time.time()
+            iter_time = start_time
+        model = train_step(model, x, y, opt, opt_state, args.unroll)
+        if itr == 0:
+            # compile at the first iteration
+            compile_time = time.time() - start_time
+            iter_time = time.time()
+            print(f"compile_time: {compile_time:.4f}")
+        if itr != 0 and (itr % batches_per_epoch == 0 or itr == (args.num_epochs * batches_per_epoch - 1)):
+            # train_acc = accuracy(model, train_eval_loader)
+            # val_acc = accuracy(model, test_loader)
+            epoch_time = time.time() - iter_time
+            iter_time = time.time()
             print(
                 "Epoch {:04d} | "
-                "Train Acc {:.4f} | Test Acc {:.4f}".format(
-                    itr // batches_per_epoch, train_acc, val_acc
+                "time {:.4f}".format(
+                    math.ceil(itr / batches_per_epoch), epoch_time
                 )
             )
+        if itr == (args.num_epochs * batches_per_epoch - 1):
+            print(f"total time: {time.time() - start_time}")
+
+
 @dataclass
 class Args:
     batch_size: int
     num_epochs: int
     test_batch_size: int
     data_aug: bool = False
+    unroll: int = 4
 
 if __name__ == '__main__':
-    args = Args(batch_size=128, num_epochs=10, test_batch_size=500)
+    args = Args(batch_size=256, num_epochs=10, test_batch_size=500)
     train(args)
