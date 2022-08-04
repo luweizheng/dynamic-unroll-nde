@@ -1,103 +1,72 @@
-import argparse
-import array
-import functools as ft
-import gzip
+from typing import Union, Sequence
+from dataclasses import dataclass
 import os
-import struct
 import urllib.request
-
-from diffrax.misc import ω
-import einops  # https://github.com/arogozhnikov/einops
+import array
+import gzip
+import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import jax
+import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
+import argparse
+import einops
+import functools as ft
+from diffrax.misc import ω
+from jax.config import config
+import struct
+import math
+# We use GPU as the default backend.
+# If you want to use cpu as backend, uncomment the following line.
+# config.update("jax_platform_name", "cpu")
 
-import equinox as eqx
 
-class MixerBlock(eqx.Module):
-    patch_mixer: eqx.nn.MLP
-    hidden_mixer: eqx.nn.MLP
-    norm1: eqx.nn.LayerNorm
-    norm2: eqx.nn.LayerNorm
 
-    def __init__(
-        self, num_patches, hidden_size, mix_patch_size, mix_hidden_size, *, key
-    ):
-        tkey, ckey = jr.split(key, 2)
-        self.patch_mixer = eqx.nn.MLP(
-            num_patches, num_patches, mix_patch_size, depth=2, key=tkey
-        )
-        self.hidden_mixer = eqx.nn.MLP(
-            hidden_size, hidden_size, mix_hidden_size, depth=2, key=ckey
-        )
-        self.norm1 = eqx.nn.LayerNorm((hidden_size, num_patches))
-        self.norm2 = eqx.nn.LayerNorm((num_patches, hidden_size))
-
+class Block(eqx.Module):
+    conv:eqx.nn.Conv2d
+    norm:eqx.nn.GroupNorm
+    def __init__(self, in_channels, out_channels, kernel_size, *, key):
+        self.conv = eqx.nn.Conv2d(in_channels, out_channels, kernel_size, stride=kernel_size,key=key)
+        self.norm = eqx.nn.GroupNorm(1, out_channels)
+        
+    
     def __call__(self, y):
-        y = y + jax.vmap(self.patch_mixer)(self.norm1(y))
-        y = einops.rearrange(y, "c p -> p c")
-        y = y + jax.vmap(self.hidden_mixer)(self.norm2(y))
-        y = einops.rearrange(y, "p c -> c p")
+        y = self.conv(y)
+        y = self.norm(y)
+        y = jnn.relu(y)
         return y
 
 
-class Mixer2d(eqx.Module):
-    conv_in: eqx.nn.Conv2d
+class CNN(eqx.Module):
+    blocks: Sequence[Block]
     conv_out: eqx.nn.ConvTranspose2d
-    blocks: list
-    norm: eqx.nn.LayerNorm
-    t1: float
-
-    def __init__(
-        self,
-        img_size,
-        patch_size,
-        hidden_size,
-        mix_patch_size,
-        mix_hidden_size,
-        num_blocks,
-        t1,
-        *,
-        key,
-    ):
-        
+    t1:float
+    norm: eqx.nn.GroupNorm
+    def __init__(self, img_size, patch_size, hidden_size, num_blocks, t1, *, key):
         input_size, height, width = img_size
-        assert (height % patch_size) == 0
-        assert (width % patch_size) == 0
-        num_patches = (height // patch_size) * (width // patch_size)
-        inkey, outkey, *bkeys = jr.split(key, 2 + num_blocks)
-
-        self.conv_in = eqx.nn.Conv2d(
-            input_size + 1, hidden_size, patch_size, stride=patch_size, key=inkey
-        )
-        self.conv_out = eqx.nn.ConvTranspose2d(
-            hidden_size, input_size, patch_size, stride=patch_size, key=outkey
-        )
-        self.blocks = [
-            MixerBlock(
-                num_patches, hidden_size, mix_patch_size, mix_hidden_size, key=bkey
-            )
-            for bkey in bkeys
-        ]
-        self.norm = eqx.nn.LayerNorm((hidden_size, num_patches))
-        self.t1 = t1
-
+        inkey, outkey = jr.split(key, 2)
+        bkey1, bkey2 = jr.split(key, 2)
+        self.blocks = [Block(input_size+1, hidden_size,patch_size,key=inkey)]
+        self.blocks.append(Block(hidden_size, hidden_size, 1, key=bkey1))
+        self.blocks.append(Block(hidden_size, hidden_size , 1, key=bkey2))
+        self.conv_out = eqx.nn.ConvTranspose2d(hidden_size, input_size, patch_size, stride=patch_size, key=outkey)
+        self.t1=t1
+        self.norm = eqx.nn.GroupNorm(1, input_size)
     def __call__(self, t, y):
         t = t / self.t1
         _, height, width = y.shape
         t = einops.repeat(t, "-> 1 h w", h=height, w=width)
         y = jnp.concatenate([y, t])
-        y = self.conv_in(y)
-        _, patch_height, patch_width = y.shape
-        y = einops.rearrange(y, "c h w -> c (h w)")
         for block in self.blocks:
             y = block(y)
+        
+        y = self.conv_out(y)
         y = self.norm(y)
-        y = einops.rearrange(y, "c (h w) -> c h w", h=patch_height, w=patch_width)
-        return self.conv_out(y)
-
+        y = jnn.relu(y)
+        return y
+    
 def single_loss_fn(model, weight, int_beta, data, t, key):
     mean = data * jnp.exp(-0.5 * int_beta(t))
     var = jnp.maximum(1 - jnp.exp(-int_beta(t)), 1e-5)
@@ -203,10 +172,10 @@ def main(
     hidden_size=64,
     mix_patch_size=512,
     mix_hidden_size=512,
-    num_blocks=4,
+    num_blocks=2,
     t1=10.0,
     # Optimisation hyperparameters
-    num_steps=10,
+    num_steps=100_000,
     lr=3e-4,
     batch_size=512,
     print_every=10_000,
@@ -227,12 +196,13 @@ def main(
     data_min = jnp.min(data)
     data_shape = data.shape[1:]
     data = (data - data_mean) / data_std
-    model = Mixer2d(
+    
+    
+
+    model = CNN(
         data_shape,
         patch_size,
         hidden_size,
-        mix_patch_size,
-        mix_hidden_size,
         num_blocks,
         t1,
         key=model_key,
@@ -273,7 +243,7 @@ def main(
     plt.axis("off")
     plt.tight_layout()
 
-    plt_filename = f"{output_dir}/euler_{num_steps}.png"
+    plt_filename = f"{output_dir}/conv_{num_steps}.png"
     plt.savefig(plt_filename)
 
 if __name__ == '__main__':
@@ -285,3 +255,4 @@ if __name__ == '__main__':
     main(num_steps=args.train_iters,
         data_dir=args.data_dir,
         output_dir=args.output_dir)
+

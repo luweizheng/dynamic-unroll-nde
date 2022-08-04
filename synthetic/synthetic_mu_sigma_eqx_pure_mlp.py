@@ -1,3 +1,4 @@
+from email import iterators
 import time
 import math
 from typing import Union, Sequence
@@ -11,8 +12,6 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
-
-from jax.config import config
 import itertools
 # We use GPU as the default backend.
 # If you want to use cpu as backend, uncomment the following line.
@@ -23,53 +22,69 @@ def lipswish(x):
 
 
 class MuField(eqx.Module):
-    mlp: eqx.nn.MLP
-
-    def __init__(self, hidden_size, width_size, depth, *, key, **kwargs):
+    l_out: eqx.nn.Linear
+    net: Sequence[eqx.nn.Linear]
+    hidden_size:int
+    depth:int
+    
+    
+    def __init__(self, hidden_size, width_size_list, depth, *, key, **kwargs):
         super().__init__(**kwargs)
-        _, mlp_key = jrandom.split(key)
-        self.mlp = eqx.nn.MLP(
-            in_size=hidden_size + 1,
-            out_size=hidden_size,
-            width_size=width_size,
-            depth=depth,
-            activation=jnn.relu,
-            final_activation=jnn.tanh,
-            key=mlp_key,
-        )
-
+        self.hidden_size = hidden_size
+        self.depth = depth
+        in_key, out_key = jrandom.split(key, 2)
+        l_in= eqx.nn.Linear(hidden_size+1, width_size_list[0], key=in_key)
+        self.net = [l_in]
+        wkeys = jrandom.split(key, depth-1)
+        for i, wkey in enumerate(wkeys):
+            l = eqx.nn.Linear(width_size_list[i], width_size_list[i+1], key=wkey)
+            self.net.append(l)
+        self.l_out = eqx.nn.Linear(width_size_list[depth-1], hidden_size, key=out_key)
+        
     def __call__(self, t, y):
-        return self.mlp(jnp.concatenate([t, y]))
+        y = jnp.concatenate([t, y])
+        for l in self.net:
+            y = l(y)
+            y = jnn.relu(y)
+        y = self.l_out(y)
+        y = jnn.tanh(y)
+        
+        return y
+            
+        
+        
 
 
 class SigmaField(eqx.Module):
-    mlp: eqx.nn.MLP
+    l_out: eqx.nn.Linear
+    net: Sequence[eqx.nn.Linear]    
     noise_size: int
     hidden_size: int
 
     def __init__(
-        self, noise_size, hidden_size, width_size, depth, *, key, **kwargs
+        self, noise_size, hidden_size, width_size_list, depth, *, key, **kwargs
     ):
         super().__init__(**kwargs)
-        _, mlp_key = jrandom.split(key)
-
-        self.mlp = eqx.nn.MLP(
-            in_size=hidden_size + 1,
-            out_size=hidden_size * noise_size,
-            width_size=width_size,
-            depth=depth,
-            activation=lipswish,
-            final_activation=jnn.tanh,
-            key=mlp_key,
-        )
         self.noise_size = noise_size
         self.hidden_size = hidden_size
+        in_key, out_key = jrandom.split(key, 2)
+        l_in= eqx.nn.Linear(hidden_size+1, width_size_list[0], key=in_key)
+        self.net = [l_in]
+        wkeys = jrandom.split(key, depth-1)
+        for i, wkey in enumerate(wkeys):
+            l = eqx.nn.Linear(width_size_list[i], width_size_list[i+1], key=wkey)
+            self.net.append(l)
+        self.l_out = eqx.nn.Linear(width_size_list[depth-1], hidden_size * noise_size, key=out_key)
 
     def __call__(self, t, y):
-        return self.mlp(jnp.concatenate([t, y])).reshape(
-            self.hidden_size, self.noise_size
-        )
-
+        y = jnp.concatenate([t,y])
+        for l in self.net:
+            y = l(y)
+            y = lipswish(y)
+        y = self.l_out(y)
+        y = jnn.tanh(y)
+        y = y.reshape(self.hidden_size, self.noise_size)
+        return y
 
 class SDEStep(eqx.Module):
     mf: MuField  # drift
@@ -80,7 +95,7 @@ class SDEStep(eqx.Module):
         self,
         noise_size,
         hidden_size,
-        width_size,
+        width_size_list,
         depth,
         *,
         key,
@@ -89,9 +104,9 @@ class SDEStep(eqx.Module):
         super().__init__(**kwargs)
         mf_key, sf_key = jrandom.split(key, 2)
 
-        self.mf = MuField(hidden_size, width_size, depth, key=mf_key)
+        self.mf = MuField(hidden_size, width_size_list, depth, key=mf_key)
         self.sf = SigmaField(
-            noise_size, hidden_size, width_size, depth, key=sf_key
+            noise_size, hidden_size, width_size_list, depth, key=sf_key
         )
 
         self.noise_size = noise_size
@@ -113,14 +128,13 @@ class NeuralSDE(eqx.Module):
     noise_size: int
     hidden_size: int
     depth: int
-    width_size: int
-
+    width_size_list: list
 
     def __init__(
         self,
         noise_size,
         hidden_size,
-        width_size,
+        width_size_list,
         depth,
         *,
         key,
@@ -129,11 +143,11 @@ class NeuralSDE(eqx.Module):
         super().__init__(**kwargs)
         step_key, _ = jrandom.split(key, 2)
 
-        self.step = SDEStep(noise_size=noise_size, hidden_size=hidden_size, width_size=width_size, depth=depth, key=step_key)
+        self.step = SDEStep(noise_size=noise_size, hidden_size=hidden_size, width_size_list=width_size_list, depth=depth, key=step_key)
 
         self.noise_size = noise_size
         self.hidden_size = hidden_size
-        self.width_size = width_size
+        self.width_size_list = width_size_list
         self.depth = depth
 
     def make_cost_model_feature(self):
@@ -186,6 +200,26 @@ class NeuralSDE(eqx.Module):
         
         # depth: depth of MLP
         features.append(self.depth * 2)
+        
+        # count of width
+        w32=0
+        w64=0
+        w128=0
+        w256=0
+        for w in self.width_size_list:
+            if w == 32:
+                w32 += 1
+            elif w == 64:
+                w64 += 1
+            elif w == 128:
+                w128 += 1
+            elif w == 256:
+                 w256 += 1
+        
+        features.append(w32)
+        features.append(w64)
+        features.append(w128)
+        features.append(w256)
 
         return features
 
@@ -243,7 +277,7 @@ def train(args):
     model = NeuralSDE(
             args.noise_size,
             args.hidden_size,
-            args.width_size,
+            args.width_size_list,
             args.depth,
             key=key,
         )
@@ -254,6 +288,7 @@ def train(args):
     features.append(args.unroll)
 
     y0 = jnp.ones((args.batch_size, args.hidden_size))
+
     learning_rate = 1e-2
     learning_rate_fn = optax.exponential_decay(learning_rate, 1, 0.999)
     optimizer = optax.adam(learning_rate=learning_rate_fn)
@@ -278,6 +313,8 @@ def train(args):
     features.append(compile_time - start_time)
     features.append(time.time() - compile_time)
     print(','.join(map(str, features)))
+    
+    del model
 
 @dataclass
 class Args:
@@ -291,7 +328,7 @@ class Args:
     
     # network
     depth: Sequence[int]
-    width_size: int
+    width_size_list: list
     
     # dynamic unroll
     unroll: int
@@ -299,6 +336,7 @@ class Args:
 
 
 def main():
+    
     # warm up run
     args = Args(batch_size=128, 
             hidden_size=16,
@@ -306,20 +344,19 @@ def main():
             num_timesteps=50,
             num_iters=1000, 
             depth=4, 
-            width_size=64,
+            width_size_list=[64,64,64,64],
             unroll=1)
     # dummy run
     train(args)
+    
+    width_sizes = [32] + [64] + [128] + [256]
 
     for batch_size in [64, 128, 256]:
-    # for batch_size in [128, 256, 512]:
         for num_timesteps in [50, 100, 200]:
-        # for num_timesteps in [50, 100, 200]:
-            for width_size in [16, 128, 256]:
-            # for width_size in [64, 128, 256, 512, 1024]:
-                for depth in [3, 4, 5, 6]:
-                # for depth in [3, 4, 5, 6]:
-                    for hidden_size in [16, 32, 64]:
+            for depth in [6]:
+                width_size_lists = [list(perm) for perm in itertools.combinations_with_replacement(width_sizes, depth) if sorted(perm) == list(perm)]
+                for hidden_size in [16, 32, 64]:
+                    for width_size_list in width_size_lists:
                         n = 0
                         while n <= 5:
                             if n == 0:
@@ -334,7 +371,7 @@ def main():
                                 num_timesteps=num_timesteps,
                                 num_iters=1000, 
                                 depth=depth, 
-                                width_size=width_size,
+                                width_size_list=width_size_list,
                                 unroll=unroll)
                             n += 1
                             train(args=args)

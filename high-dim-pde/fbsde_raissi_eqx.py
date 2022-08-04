@@ -15,6 +15,10 @@ import equinox as eqx
 
 import xgboost as xgb
 
+import sys; 
+sys.path.insert(0, '..')
+from simulated_annealing import annealing
+
 class FNN(eqx.Module):
     mlp: eqx.nn.MLP
 
@@ -150,9 +154,18 @@ class NeuralFBSDE(eqx.Module):
         # width_size: width for every layer of MLP
         # output = output + str(self.width_size) + ','
         
-        # depth: depth of MLP
+        # depth: depth of all Dense layers
         features.append(self.depth * 2)
-
+        # depth of width <= 32
+        features.append(0)
+        # depth of width <= 64
+        features.append(0)
+        # depth of width <= 128
+        features.append(self.depth)
+        # depth of width <= 256
+        features.append(0)
+        
+        
         return features
 
     def __call__(self, x0, t0, dt, num_timesteps, unroll=1, key=jrandom.PRNGKey(0)):
@@ -231,63 +244,76 @@ def train(args):
     features.append(args.num_timesteps)
 
     compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/compile.txt")
+    compile_model_loaded.load_model("../cost-model/ckpt/compile2.txt")
 
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/run.txt")
-
-    from scipy.optimize import dual_annealing
+    run_model_loaded.load_model("../cost-model/ckpt/run2.txt")
 
     def cost_fn(unroll):
         cur_features = features + [unroll]
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred
+        total_time_pred = compilation_time_pred + run_time_pred * 10
         
         return total_time_pred
+
+    if args.search_method == "exhaustive":
+        # exhaustively iterate a list of candidates
+        unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
+        total_time_pred_list = []
+        for unroll in unroll_list:
+            total_time_pred = cost_fn(unroll)
+            total_time_pred_list.append(total_time_pred)
+        predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
+    elif args.search_method == "sa_scipy":
+        # dual annealing from scipy
+        bounds = [[2, args.num_timesteps // 2]]
+        from scipy.optimize import dual_annealing
+
+        result = dual_annealing(cost_fn, bounds, maxiter=20)
+        predicted_unroll = result['x']
+    elif args.search_method == "sa_our":
+        # my own implementation of SA
+        bounds = (2, args.num_timesteps // 2)
+
+        def clip(x, bounds):
+            """ Force x to be in the interval."""
+            a, b = bounds
+            return int(max(min(x, b), a))
+
+        def random_neighbour(x, bounds, fraction=1):
+            """Move a little bit x, from the left or the right."""
+            amplitude = (max(bounds) - min(bounds)) * fraction / 10
+            delta = (-amplitude/2.) + amplitude * np.random.random_sample()
+            return clip(x + delta, bounds)
+        predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
     
-    bounds = [[2, args.num_timesteps // 2]]
-    result = dual_annealing(cost_fn, bounds, maxiter=1000)
-
-    print('Status : %s' % result['message'])
-    print('Total Evaluations: %d' % result['nfev'])
-    # evaluate solution
-    predicted_unroll = result['fun']
-
-    # iterate a list of candidates
-    # unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
-    # total_time_pred = []
-    # for unroll in unroll_list:
-    #     cur_features = features + [unroll]
-        
-    #     compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
-    #     run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-    #     total_time_pred.append(compilation_time_pred + run_time_pred * 10)
-    # predicted_unroll = unroll_list[np.argmin(total_time_pred)]
     print(f"predicted unroll: {predicted_unroll}")
 
-    x0 = jnp.array([1.0, 0.5] * int(args.dim / 2))
-    x0 = jnp.broadcast_to(x0, (args.batch_size, args.dim))
+    # train
+    # 为了测试上面的cost model，先把下面的注释，下面这部分太浪费时间
+    # x0 = jnp.array([1.0, 0.5] * int(args.dim / 2))
+    # x0 = jnp.broadcast_to(x0, (args.batch_size, args.dim))
 
-    optimizer = optax.adam(learning_rate)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    # optimizer = optax.adam(learning_rate)
+    # opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    for step in range(args.num_iters):
-        rng, _ = jrandom.split(rng)
-        bm_key = jrandom.split(rng, args.batch_size)
-        # data = fetch_minibatch(rng)
-        loss, model, loss, y_pred = train_step(model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
+    # for step in range(args.num_iters):
+    #     rng, _ = jrandom.split(rng)
+    #     bm_key = jrandom.split(rng, args.batch_size)
+    #     # data = fetch_minibatch(rng)
+    #     loss, model, loss, y_pred = train_step(model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
 
-        if step == 0:
-            compile_ts = time.time()
+    #     if step == 0:
+    #         compile_ts = time.time()
         
     
-    compile_time = compile_ts - start_ts
-    run_time = time.time() - compile_ts
-    total_time = compile_time + run_time * 10
+    # compile_time = compile_ts - start_ts
+    # run_time = time.time() - compile_ts
+    # total_time = compile_time + run_time * 10
 
-    print(f"unroll: {args.unroll}, actuall time: {total_time}")
+    # print(f"unroll: {args.unroll}, actuall time: {total_time}")
 
 
 @dataclass
@@ -307,6 +333,7 @@ class Args:
     # dynamic unroll
     unroll: int
     T: float = 1.0
+    search_method: str = "sa_scipy"
 
 def main():
     unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
@@ -318,7 +345,8 @@ def main():
                 num_iters=1000, 
                 depth=3, 
                 width_size=64,
-                unroll=20)
+                unroll=20,
+                search_method="sa_our")
     # warm up run
     train(args)
     # for unroll in unroll_list:
