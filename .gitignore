@@ -64,5 +64,5 @@ test.db
 # Logs
 */logs/
 
-*/.data/
+unroll_test/.data/
 ode/.data/
