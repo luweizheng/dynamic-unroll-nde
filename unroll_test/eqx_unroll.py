@@ -7,7 +7,7 @@ import jax.nn as jnn
 import jax.random as jrandom
 import equinox as eqx
 
-from jax.config import config
+# from jax.config import config
 # We use GPU as the default backend.
 # If you want to use cpu as backend, uncomment the following line.
 # config.update("jax_platform_name", "cpu")
