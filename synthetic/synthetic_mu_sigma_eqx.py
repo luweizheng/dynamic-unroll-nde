@@ -1,5 +1,6 @@
 import time
 import math
+import argparse
 from typing import Union, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -9,7 +10,6 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
-import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
 
 from jax.config import config
@@ -80,8 +80,10 @@ class SDEStep(eqx.Module):
         self,
         noise_size,
         hidden_size,
-        width_size,
-        depth,
+        mu_width_size,
+        sigma_width_size,
+        mu_depth,
+        sigma_depth,
         *,
         key,
         **kwargs,
@@ -89,9 +91,9 @@ class SDEStep(eqx.Module):
         super().__init__(**kwargs)
         mf_key, sf_key = jrandom.split(key, 2)
 
-        self.mf = MuField(hidden_size, width_size, depth, key=mf_key)
+        self.mf = MuField(hidden_size, mu_width_size, mu_depth, key=mf_key)
         self.sf = SigmaField(
-            noise_size, hidden_size, width_size, depth, key=sf_key
+            noise_size, hidden_size, sigma_width_size, sigma_depth, key=sf_key
         )
 
         self.noise_size = noise_size
@@ -112,16 +114,20 @@ class NeuralSDE(eqx.Module):
     step: SDEStep
     noise_size: int
     hidden_size: int
-    depth: int
-    width_size: int
+    mu_depth: int
+    sigma_depth: int
+    mu_width_size: int
+    sigma_width_size: int
 
 
     def __init__(
         self,
         noise_size,
         hidden_size,
-        width_size,
-        depth,
+        mu_width_size,
+        sigma_width_size,
+        mu_depth,
+        sigma_depth,
         *,
         key,
         **kwargs,
@@ -129,12 +135,21 @@ class NeuralSDE(eqx.Module):
         super().__init__(**kwargs)
         step_key, _ = jrandom.split(key, 2)
 
-        self.step = SDEStep(noise_size=noise_size, hidden_size=hidden_size, width_size=width_size, depth=depth, key=step_key)
+        self.step = SDEStep(noise_size=noise_size,
+            hidden_size=hidden_size,
+            mu_width_size=mu_width_size,
+            sigma_width_size=sigma_width_size,
+            mu_depth=mu_depth,
+            sigma_depth=sigma_depth, 
+            key=step_key)
 
         self.noise_size = noise_size
         self.hidden_size = hidden_size
-        self.width_size = width_size
-        self.depth = depth
+        self.mu_width_size = mu_width_size
+        self.sigma_width_size = sigma_width_size
+        self.mu_depth = mu_depth
+        self.sigma_depth = sigma_depth
+
 
     def make_cost_model_feature(self):
 
@@ -158,34 +173,54 @@ class NeuralSDE(eqx.Module):
         step_flops = step_cost['flops']
         
         features = []
-        # step bytes access
+        # f0: step bytes access
         features.append(step_bytes_access)
+        # f1: op0 bytes access
         features.append(step_bytes_access_op0)
+        # f2: op1 bytes access
         features.append(step_bytes_access_op1)
+        # f3: out bytes access
         features.append(step_bytes_access_out)
 
-        # step FLOPS 
+        # f4: step FLOPS 
         features.append(step_flops)
-        # step Arithmetic Intensity
+        # f5: step Arithmetic Intensity
         features.append(step_flops / step_bytes_access)
 
         total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
 
-        # total params
+        # f6: total params
         features.append(total_params / 1e6)
 
-        # hidden_size: the dimension of DE
+        # f7: the dimension of DE
         features.append(self.hidden_size)
+        
+        # f8: depth of all MLP, in this case, mu and sigma
+        features.append(self.mu_depth + self.sigma_depth)
 
-        # noise_size: browian motion size ? 
-        # TODO should we add this for ODE/CDE？
-        # output = output + str(self.noise_size) + ','
+        # count of width
+        w128=0
+        w256=0
+        w512=0
+        w512lg=0
+        for d, w in zip([self.mu_depth, self.sigma_depth], [self.mu_width_size, self.sigma_width_size]):
+            if w <= 128:
+                w128 += d
+            elif w <= 256:
+                w256 += d
+            elif w <= 512:
+                w512 += d
+            else:
+                w512lg += d
         
-        # width_size: width for every layer of MLP
-        # output = output + str(self.width_size) + ','
-        
-        # depth: depth of MLP
-        features.append(self.depth * 2)
+        # f9: width <= 128
+        features.append(w128)
+        # f10: 128 < width <= 256
+        features.append(w256)
+        # f11: 256 < width <= 512
+        features.append(w512)
+        # f12: width > 512
+        features.append(w512lg)
 
         return features
 
@@ -243,14 +278,19 @@ def train(args):
     model = NeuralSDE(
             args.noise_size,
             args.hidden_size,
-            args.width_size,
-            args.depth,
+            args.mu_width_size,
+            args.sigma_width_size,
+            args.mu_depth,
+            args.sigma_depth,
             key=key,
         )
 
     features = model.make_cost_model_feature()
+    # f13: batch size
     features.append(args.batch_size)
+    # f14: num of time steps
     features.append(args.num_timesteps)
+    # f15: unroll
     features.append(args.unroll)
 
     y0 = jnp.ones((args.batch_size, args.hidden_size))
@@ -290,8 +330,10 @@ class Args:
     num_iters: int
     
     # network
-    depth: Sequence[int]
-    width_size: int
+    mu_depth: int
+    mu_width_size: int
+    sigma_depth: int
+    sigma_width_size: int
     
     # dynamic unroll
     unroll: int
@@ -299,45 +341,52 @@ class Args:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--num_timesteps', type=int, default=200)
+    
+    cli_args = parser.parse_args()
+    batch_size = cli_args.batch_size
+    num_timesteps = cli_args.num_timesteps
     # warm up run
-    args = Args(batch_size=128, 
-            hidden_size=16,
-            noise_size=16,
-            num_timesteps=50,
+    args = Args(batch_size=batch_size, 
+            hidden_size=64,
+            noise_size=64,
+            num_timesteps=num_timesteps,
             num_iters=1000, 
-            depth=4, 
-            width_size=64,
+            mu_depth=3,
+            mu_width_size=64,
+            sigma_depth=3,
+            sigma_width_size=64,
             unroll=1)
     # dummy run
     train(args)
 
-    for batch_size in [64, 128, 256]:
-    # for batch_size in [128, 256, 512]:
-        for num_timesteps in [50, 100, 200]:
-        # for num_timesteps in [50, 100, 200]:
-            for width_size in [16, 128, 256]:
-            # for width_size in [64, 128, 256, 512, 1024]:
-                for depth in [3, 4, 5, 6]:
-                # for depth in [3, 4, 5, 6]:
-                    for hidden_size in [16, 32, 64]:
-                        n = 0
-                        while n <= 5:
-                            if n == 0:
-                                unroll = 1
-                            else:
-                                unroll = math.ceil(0.1 * n * num_timesteps)
-                                if unroll > 100:
-                                    break
-                            args = Args(batch_size=batch_size, 
-                                hidden_size=hidden_size,
-                                noise_size=hidden_size,
-                                num_timesteps=num_timesteps,
-                                num_iters=1000, 
-                                depth=depth, 
-                                width_size=width_size,
-                                unroll=unroll)
-                            n += 1
-                            train(args=args)
+    for width_size in [768, 512, 256, 128]:
+    # for width_size in [256, 128]:
+        # for depth in [3, 4, 5, 6]:
+        for depth in [6, 5, 4, 3]:
+            for hidden_size in [64, 32, 16]:
+                n = 0
+                while n <= 5:
+                    if n == 0:
+                        unroll = 1
+                    else:
+                        unroll = math.ceil(n * num_timesteps / 10)
+                        if unroll > 100:
+                            break
+                    args = Args(batch_size=batch_size, 
+                        hidden_size=hidden_size,
+                        noise_size=hidden_size,
+                        num_timesteps=num_timesteps,
+                        num_iters=1000, 
+                        mu_depth=depth,
+                        mu_width_size=width_size,
+                        sigma_depth=depth,
+                        sigma_width_size=width_size,
+                        unroll=unroll)
+                    n += 1
+                    train(args=args)
 
 
 if __name__ == '__main__':
