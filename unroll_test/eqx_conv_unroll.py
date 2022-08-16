@@ -223,7 +223,7 @@ def train(args):
     collection.append(args.unroll)
 
     data_gen = inf_generator(train_loader)
-    batches_per_epoch = len(train_loader)
+    # batches_per_epoch = len(train_loader)
     key = jax.random.PRNGKey(0)
     lr = 0.1
     opt = optax.sgd(lr, momentum=0.9)
@@ -236,12 +236,12 @@ def train(args):
     for itr in range(args.num_iters):
         if itr == 0:
             start_time = time.time()
-            iter_time = start_time
+            # iter_time = start_time
         model, opt_state = train_step(model, x, y, opt, opt_state)
         if itr == 0:
             # compile at the first iteration
             compile_time = time.time() - start_time
-            iter_time = time.time()
+            # iter_time = time.time()
             # print(f"compile_time: {compile_time:.4f}")
             collection.append(compile_time)
         # if itr != 0 and (itr % batches_per_epoch == 0 or itr == (args.num_epochs * batches_per_epoch - 1)):

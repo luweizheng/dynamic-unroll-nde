@@ -15,7 +15,6 @@ import argparse
 import einops
 import functools as ft
 from diffrax.misc import ω
-from jax.config import config
 import struct
 import math
 # We use GPU as the default backend.
