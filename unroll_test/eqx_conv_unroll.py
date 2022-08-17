@@ -1,17 +1,12 @@
 from typing import Sequence, Union
 import jax.numpy as jnp
-import numpy  as np
 import jax.nn as jnn
 import jax.random as jr
 import jax
 import optax
 import equinox as eqx
 import os
-import math
 import time
-from torch.utils.data import DataLoader
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
 from dataclasses import dataclass
 import functools as ft
 
@@ -64,7 +59,7 @@ class ODEfunc(eqx.Module):
         return out 
 
 
-def solve(step, y0, t0, dt, num_timesteps, unroll=5):
+def solve(step, y0, t0, dt, num_timesteps, unroll=1):
     carry = (0, t0, dt, y0)
 
     _, ys = jax.lax.scan(step, carry, xs=None, length=num_timesteps, unroll=unroll)
@@ -163,8 +158,8 @@ def train_step(model, x, y, opt, opt_state):
 
 def train(args):
     collection = []
-    collection.append(args.arch)
-    collection.append(args.unroll)
+    # collection.append(args.arch)
+    # collection.append(args.unroll)
     key = jax.random.PRNGKey(0)
     lr = 0.1
     opt = optax.sgd(lr, momentum=0.9)
@@ -173,13 +168,12 @@ def train(args):
     x = jnp.ones((64, 3, 112, 112), dtype=jnp.float32)
     dummy_y = [0,1,2,3,4,5,6,7,8,9]*6+[0,1,2,3]
     y = jnp.asarray(dummy_y, dtype=jnp.float32)
+    start_time = time.time()
     for itr in range(args.num_iters):
-        if itr == 0:
-            start_time = time.time()
         model, opt_state = train_step(model, x, y, opt, opt_state)
         if itr == 0:
-            compile_time = time.time() - start_time
-            collection.append(compile_time)
+            compile_time = time.time()
+    collection.append(compile_time - start_time)
     collection.append(time.time() - compile_time)
     print(','.join(map(str, collection)))
 
@@ -194,12 +188,15 @@ class Args:
      
 
 if __name__ == '__main__':
-    args = Args(batch_size=64, num_timesteps=500, num_iters=1000, unroll=1)
+    args = Args(batch_size=64, 
+                num_timesteps=1000, 
+                num_iters=16000, 
+                unroll=1)
     
     # warm up
     train(args)
     
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50]
+    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 100]
     for unroll in unroll_list:
         args.unroll = unroll
         train(args) 

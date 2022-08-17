@@ -95,12 +95,12 @@ def batch_forward_fn(model, xs, num_steps):
     
 def run(args):
     collection = []
-    collection.append(args.arch)
-    collection.append(args.unroll)
-    start_ts = time.time()
+    # collection.append(args.arch)
+    # collection.append(args.unroll)
     key = jrandom.PRNGKey(args.seed)
     model = Unroll(args.hidden_size, args.width_size_list, args.depth, args.unroll, key=key)
     x = jnp.ones((args.batch_size, args.hidden_size))
+    start_ts = time.time()
     for step in range(args.num_iters):
         batch_forward_fn(model, x, args.num_steps)
         if step == 0:
@@ -115,17 +115,17 @@ if __name__ == '__main__':
     args = Args(
         batch_size=64,
         hidden_size=16,
-        num_steps=500,
-        num_iters=1000,
+        num_steps=1000,
+        num_iters=2000,
         depth=3,
-        width_size_list=[32,32,32],
+        width_size_list=[64,64,64],
         unroll=1,
     )
     
     #warm up 
     run(args)
     
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50]
+    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 100]
     for unroll in unroll_list:
         args.unroll = unroll
         
