@@ -79,12 +79,18 @@ class Args:
     
     #arch
     arch:str = 'Titan'
-
-@eqx.filter_value_and_grad
+    
+    
 @eqx.filter_jit
-def forward_fn(model, x, num_steps):
-    y = jax.vmap(model, in_axes=(0, None))(x, num_steps)
-    loss = jnp.max(y)
+def single_forward_fn(model, x, num_steps):
+    y = model(x, num_steps)
+    return y
+
+@eqx.filter_jit
+def batch_forward_fn(model, xs, num_steps):
+    fn = partial(single_forward_fn, model)
+    y = jax.vmap(fn, in_axes=(0, None))(xs, num_steps)
+    loss = jnp.mean(y)
     return loss
     
 def run(args):
@@ -96,7 +102,7 @@ def run(args):
     model = Unroll(args.hidden_size, args.width_size_list, args.depth, args.unroll, key=key)
     x = jnp.ones((args.batch_size, args.hidden_size))
     for step in range(args.num_iters):
-        forward_fn(model, x, args.num_steps)
+        batch_forward_fn(model, x, args.num_steps)
         if step == 0:
             compile_ts = time.time()
     
@@ -107,19 +113,19 @@ def run(args):
 
 if __name__ == '__main__':
     args = Args(
-        batch_size=128,
-        hidden_size=32,
+        batch_size=64,
+        hidden_size=16,
         num_steps=500,
-        num_iters=2000,
-        depth=5,
-        width_size_list=[16, 32, 64, 128, 256],
+        num_iters=1000,
+        depth=3,
+        width_size_list=[32,32,32],
         unroll=1,
     )
     
     #warm up 
     run(args)
     
-    unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
+    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50]
     for unroll in unroll_list:
         args.unroll = unroll
         

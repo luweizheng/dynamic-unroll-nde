@@ -87,6 +87,7 @@ class ODEBlock(eqx.Module):
     def step(self, carry, input=None):
         (i, t0, dt, y0) = carry 
         t = t0 + i * dt
+        # dy/dt = drift(t,y)
 
         dy = dt * self.odefunc(t, y0)
         y1 = y0 + dy
@@ -146,6 +147,56 @@ def batch_loss_fn(model, images, labels):
     loss = jnp.mean(loss_fn(images, labels))
     return loss
 
+
+def get_cifar10_loaders(data_aug=False, batch_size=128, test_batch_size=1000, perc=1.0):
+    if data_aug:
+        transform_train = transforms.Compose([
+            transforms.RandomCrop(28, padding=4),
+            transforms.Resize(112),
+            transforms.ToTensor(),
+        ])
+    else:
+        transform_train = transforms.Compose([
+            transforms.Resize(112),
+            transforms.ToTensor(),
+        ])
+
+    transform_test = transforms.Compose([
+        transforms.Resize(112),
+        transforms.ToTensor(),
+    ])
+
+    train_loader = DataLoader(
+        datasets.CIFAR10(root='.data/cifar10', train=True, transform=transform_train, download=True), 
+        batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True
+    )
+
+
+    train_eval_loader = DataLoader(
+        datasets.CIFAR10(root='.data/cifar10', train=True, transform=transform_test, download=True),
+        batch_size=test_batch_size, shuffle=False, num_workers=16, drop_last=True
+    )
+
+    test_loader = DataLoader(
+        datasets.CIFAR10(root='.data/cifar10', train=False, transform=transform_test, download=True),
+        batch_size=test_batch_size, shuffle=False, num_workers=16, drop_last=True
+    )
+
+    return train_loader, test_loader, train_eval_loader
+
+
+def inf_generator(iterable):
+    """Allows training with DataLoaders in a single infinite loop:
+        for i, (x, y) in enumerate(inf_generator(train_loader)):
+    """
+    iterator = iterable.__iter__()
+    while True:
+        try:
+            yield iterator.__next__()
+        except StopIteration:
+            iterator = iterable.__iter__()
+
+
 @eqx.filter_jit
 def acc_step(model, x, y):
     logits = jax.vmap(model, in_axes=(0))(x)
@@ -158,28 +209,49 @@ def acc_step(model, x, y):
 @eqx.filter_jit
 def train_step(model, x, y, opt, opt_state):
     _ , grads = batch_loss_fn(model, x, y)
+    # updates, opt_state = opt.update(grads, opt_state)
+    # model = eqx.apply_updates(model, updates)
 
     return model, opt_state
 
 def train(args):
+    train_loader, test_loader, _ = get_cifar10_loaders(
+        args.data_aug, args.batch_size, args.test_batch_size
+    )
     collection = []
     collection.append(args.arch)
     collection.append(args.unroll)
+
+    data_gen = inf_generator(train_loader)
+    # batches_per_epoch = len(train_loader)
     key = jax.random.PRNGKey(0)
     lr = 0.1
     opt = optax.sgd(lr, momentum=0.9)
+    # start_time = time.time()
     model = ODENet(num_timesteps=args.num_timesteps ,key=key)
     opt_state = opt.init(eqx.filter(model, eqx.is_inexact_array))
-    x = jnp.ones((64, 3, 112, 112), dtype=jnp.float32)
-    dummy_y = [0,1,2,3,4,5,6,7,8,9]*6+[0,1,2,3]
-    y = jnp.asarray(dummy_y, dtype=jnp.float32)
+    x, y = data_gen.__next__()
+    x = jnp.asarray(x, dtype=jnp.float32)
+    y = jnp.asarray(y, dtype=jnp.float32)
     for itr in range(args.num_iters):
         if itr == 0:
             start_time = time.time()
+            # iter_time = start_time
         model, opt_state = train_step(model, x, y, opt, opt_state)
         if itr == 0:
+            # compile at the first iteration
             compile_time = time.time() - start_time
+            # iter_time = time.time()
+            # print(f"compile_time: {compile_time:.4f}")
             collection.append(compile_time)
+        # if itr != 0 and (itr % batches_per_epoch == 0 or itr == (args.num_epochs * batches_per_epoch - 1)):
+        #     # train_acc = accuracy(model, train_eval_loader)
+        #     val_acc = accuracy(model, test_loader)
+        #     epoch_time = time.time() - iter_time
+        #     iter_time = time.time()
+        #     print(f"epoch {math.ceil(itr / batches_per_epoch)}, time {epoch_time:.4f}, val_acc {val_acc:.4f}")
+        # if itr == (args.num_iters - 1):
+            # print(f"total time: {time.time() - start_time}")
     collection.append(time.time() - compile_time)
     print(','.join(map(str, collection)))
 
@@ -188,18 +260,19 @@ class Args:
     batch_size: int
     num_timesteps: int
     num_iters: int
+    test_batch_size: int
     unroll: int
     data_aug: bool = False
     arch: str = 'Titan'
      
 
 if __name__ == '__main__':
-    args = Args(batch_size=64, num_timesteps=500, num_iters=1000, unroll=1)
+    args = Args(batch_size=64, num_timesteps=500, num_iters=1000, test_batch_size=128, unroll=1)
     
     # warm up
     train(args)
     
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50]
+    unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
     for unroll in unroll_list:
         args.unroll = unroll
         train(args) 
