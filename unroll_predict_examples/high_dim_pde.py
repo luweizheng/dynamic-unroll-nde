@@ -323,7 +323,7 @@ def train(args):
     
     compile_time = compile_ts - start_ts
     run_time = time.time() - compile_ts
-    total_time = compile_time + run_time * 10
+    total_time = compile_time + run_time 
 
     print(f"unroll: {args.unroll}, actuall time: {total_time}")
 

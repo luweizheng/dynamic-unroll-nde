@@ -1,0 +1,1 @@
+python neural_ode.py > ./logs/neural_ode.logs

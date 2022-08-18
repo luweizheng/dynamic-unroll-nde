@@ -1,0 +1,1 @@
+python sde-gans.py > ./logs/sde-gans.log

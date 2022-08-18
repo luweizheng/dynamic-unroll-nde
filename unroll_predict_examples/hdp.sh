@@ -1,0 +1,1 @@
+python high_dim_pde.py > ./logs/high_dim_pde.logs

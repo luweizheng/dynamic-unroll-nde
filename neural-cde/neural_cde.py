@@ -30,9 +30,6 @@ class Func(eqx.Module):
             width_size=width_size,
             depth=depth,
             activation=jnn.softplus,
-            # Note the use of a tanh final activation function. This is important to
-            # stop the model blowing up. (Just like how GRUs and LSTMs constrain the
-            # rate of change of their hidden states.)
             final_activation=jnn.tanh,
             key=key,
         )
@@ -62,14 +59,9 @@ class NeuralCDE(eqx.Module):
         return (carry , y1)
 
     def __call__(self, ts, coeffs, evolving_out=False, unroll=1):
-        # Each sample of data consists of some timestamps `ts`, and some `coeffs`
-        # parameterising a control path. These are used to produce a continuous-time
-        # input path `control`.
-        # jax.debug.print(f"{ts.shape}")
+        
         control = diffrax.CubicInterpolation(ts, coeffs)
         term = diffrax.ControlTerm(self.func, control).to_ode()
-        # solver = diffrax.Euler()
-        # dt0 = ts[1] - ts[0]
         dt0 = ts[1] - ts[0]
         y0 = self.initial(control.evaluate(ts[0]))
         carry = (0, ts[0], dt0, y0)
@@ -83,25 +75,6 @@ class NeuralCDE(eqx.Module):
             prediction = jax.vmap(lambda y: jnn.sigmoid(self.linear(y))[0])(ys)
         else:
             (prediction,) = jnn.sigmoid(self.linear(ys[-1]))
-        # jax.debug.print(f"{prediction.shape}")
-        # (prediction,) = jnn.sigmoid(self.linear(ys[-1]))
-        # if evolving_out:
-        #     saveat = diffrax.SaveAt(ts=ts)
-        # else:
-        #     saveat = diffrax.SaveAt(t1=True)
-        # solution = diffrax.diffeqsolve(
-        #     term,
-        #     solver,
-        #     ts[0],
-        #     ts[-1],
-        #     dt0,
-        #     y0,
-        #     saveat=saveat,
-        # )
-        # if evolving_out:
-        #     prediction = jax.vmap(lambda y: jnn.sigmoid(self.linear(y))[0])(solution.ys)
-        # else:
-        #     (prediction,) = jnn.sigmoid(self.linear(solution.ys[-1]))
         return prediction
 
 def get_data(dataset_size, add_noise, *, key):
@@ -159,7 +132,6 @@ def main(
 
     model = NeuralCDE(data_size, hidden_size, width_size, depth, key=model_key)
 
-    # Training loop like normal.
 
     @eqx.filter_jit
     def loss(model, ti, label_i, coeff_i):

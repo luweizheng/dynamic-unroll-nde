@@ -772,7 +772,7 @@ def main():
     parser.add_argument('--initial-noise-size', type=int, default=5)
     parser.add_argument('--noise-size', type=int, default=3)
     parser.add_argument('--hidden-size', type=int, default=16)
-    parser.add_argument('--width-size', type=int, default=64)
+    parser.add_argument('--width-size', type=int, default=500)
     parser.add_argument('--depth', type=int, default=4)
     parser.add_argument('--generator-lr', type=float, default=2e-5)
     parser.add_argument('--discriminator-lr', type=float, default=1e-4)
