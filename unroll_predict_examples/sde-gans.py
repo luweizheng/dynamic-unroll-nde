@@ -14,8 +14,6 @@ import jax.tree_util as jtu
 import optax  # https://github.com/deepmind/optax
 import argparse
 from dataclasses import dataclass
-import os
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 import sys; 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing

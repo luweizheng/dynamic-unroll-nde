@@ -319,6 +319,7 @@ def train(args):
     
     features.append(compile_time - start_time)
     features.append(time.time() - compile_time)
+    features.append(time.time() - start_time)
     print(','.join(map(str, features)))
 
 @dataclass
@@ -343,7 +344,7 @@ class Args:
 
 
 def main():
-    print("unroll, compile_time, execute_time")
+    print("unroll, compile_time, execute_time, total_time")
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_timesteps', type=int, default=1000)

@@ -1,3 +1,4 @@
+import functools
 import math
 import time
 from dataclasses import dataclass
@@ -182,7 +183,7 @@ class NeuralFBSDE(eqx.Module):
         
         return features
 
-    def __call__(self, x0, t0, dt, num_timesteps, unroll=1, key=jrandom.PRNGKey(0)):
+    def __call__(self, t0, dt, num_timesteps, unroll, x0, key=jrandom.PRNGKey(0)):
         
         y0, z0 = self.step.u_and_dudx(t=jnp.zeros((1, )), x=x0)
 
@@ -214,9 +215,9 @@ def train_step(model, x0, t0, dt, num_timesteps, optimizer, opt_state, unroll=1,
     @eqx.filter_jit
     def loss_fn(model):
         loss = 0.0
-        
-        out_carry, out_val = jax.vmap(model, in_axes=(0, None, None, None, None, 0))(x0, t0, dt, num_timesteps, unroll, key)
-        
+        fn = functools.partial(model, t0, dt, num_timesteps, unroll)
+        # out_carry, out_val = jax.vmap(model, in_axes=(0, None, None, None, None, 0))(x0, t0, dt, num_timesteps, unroll, key)
+        out_carry, out_val = jax.vmap(fn, in_axes=(0, 0))(x0, key)
         (_, _, _, x_final, y_final, z_final, _) = out_carry
         (x, y_tilde_list, y_list) = out_val
         
@@ -257,7 +258,7 @@ def train(args):
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred * 10
+        total_time_pred = compilation_time_pred + run_time_pred
         
         return total_time_pred
 
@@ -324,12 +325,12 @@ def main():
     # test code
     args = Args(batch_size=128, 
                 dt=0.2,
-                dim=100,
+                dim=16,
                 num_timesteps=1000,
-                num_iters=1000, 
+                num_iters=500, 
                 depth=3, 
                 width_size=64,
-                unroll=20,
+                unroll=1,
                 search_method="exhaustive")
     # warm up run
     train(args)
