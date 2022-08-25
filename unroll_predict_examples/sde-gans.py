@@ -10,7 +10,7 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
-import matplotlib.pyplot as plt
+import jax.tree_util as jtu
 import optax  # https://github.com/deepmind/optax
 import argparse
 from dataclasses import dataclass
@@ -303,7 +303,7 @@ class NeuralSDE(eqx.Module):
         features.append(step_bytes_access_out)
         features.append(step_flops)
         features.append(step_flops / step_bytes_access)
-        total_params = sum(p.size for p in jax.tree_util.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+        total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.step, eqx.is_array)))
         features.append(total_params / 1e6)
         features.append(self.hidden_size)
         features.append(self.depth )
@@ -457,7 +457,7 @@ class NeuralCDE(eqx.Module):
 
     @eqx.filter_jit
     def clip_weights(self):
-        leaves, treedef = jax.tree_util.tree_flatten(
+        leaves, treedef = jtu.tree_flatten(
             self, is_leaf=lambda x: isinstance(x, eqx.nn.Linear)
         )
         new_leaves = []
@@ -468,7 +468,7 @@ class NeuralCDE(eqx.Module):
                     lambda x: x.weight, leaf, leaf.weight.clip(-lim, lim)
                 )
             new_leaves.append(leaf)
-        return jax.tree_util.tree_unflatten(treedef, new_leaves)
+        return jtu.tree_unflatten(treedef, new_leaves)
 
 
 @partial(jax.jit, static_argnames=['num_timesteps'])
@@ -545,7 +545,7 @@ def grad_loss(g_d, ts_i, ys_i, key, unroll1, unroll2, step):
 
 
 def increase_update_initial(updates):
-    get_initial_leaves = lambda u: jax.tree_util.tree_leaves(u.initial)
+    get_initial_leaves = lambda u: jtu.tree_leaves(u.initial)
     return eqx.tree_at(get_initial_leaves, updates, replace_fn=lambda x: x * 10)
 
 
@@ -631,17 +631,17 @@ def train(
     dis_features.append(num_timesteps)
     compile_model_loaded = xgb.Booster()
 
-    compile_model_loaded.load_model(xgb_dir+"compile2.txt")
+    compile_model_loaded.load_model(xgb_dir+"titan_compile.txt")
 
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model(xgb_dir+"run2.txt")
+    run_model_loaded.load_model(xgb_dir+"titan_execution.txt")
 
     def raw_cost_fn(features, unroll):
         cur_features = features + [unroll]
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred * 10
+        total_time_pred = compilation_time_pred + run_time_pred 
         
         return total_time_pred
 
@@ -728,38 +728,11 @@ def train(
                 num_batches += 1
             print(f"Step: {step}, Iter Time: {time.time() - last_iter_time: .3f}, Loss: {total_score / num_batches}")
             last_iter_time = time.time()
-
-    # Plot samples
-    fig, ax = plt.subplots()
-    num_samples = min(50, dataset_size)
-    ts_to_plot = ts[:num_samples]
-    ys_to_plot = ys[:num_samples]
-
-    def _interp(ti, yi):
-        return diffrax.linear_interpolation(
-            ti, yi, replace_nans_at_start=0.0, fill_forward_nans_at_end=True
-        )
-
-    ys_to_plot = jax.vmap(_interp)(ts_to_plot, ys_to_plot)[..., 0]
-    ys_sampled = jax.vmap(generator)(
-        ts_to_plot, key=jrandom.split(sample_key, num_samples)
-    )[..., 0]
-    kwargs = dict(label="Real")
-    for ti, yi in zip(ts_to_plot, ys_to_plot):
-        ax.plot(ti, yi, c="dodgerblue", linewidth=0.5, alpha=0.7, **kwargs)
-        kwargs = {}
-    kwargs = dict(label="Generated")
-    for ti, yi in zip(ts_to_plot, ys_sampled):
-        ax.plot(ti, yi, c="crimson", linewidth=0.5, alpha=0.7, **kwargs)
-        kwargs = {}
-    ax.set_title(f"{num_samples} samples from both real and generated distributions.")
-    fig.legend()
-    fig.tight_layout()
-    fig.savefig("./my_control_5000_neural_sde.png")
-    plt.show()
+            
+            
     compile_time = compile_ts - start_ts
     run_time = time.time() - compile_ts
-    total_time = compile_time + run_time * 10
+    total_time = compile_time + run_time 
 
     print(f"unroll: {unroll}, actuall time: {total_time}")
     
@@ -772,21 +745,21 @@ def main():
     parser.add_argument('--initial-noise-size', type=int, default=5)
     parser.add_argument('--noise-size', type=int, default=3)
     parser.add_argument('--hidden-size', type=int, default=16)
-    parser.add_argument('--width-size', type=int, default=500)
-    parser.add_argument('--depth', type=int, default=4)
+    parser.add_argument('--width-size', type=int, default=64)
+    parser.add_argument('--depth', type=int, default=3)
     parser.add_argument('--generator-lr', type=float, default=2e-5)
     parser.add_argument('--discriminator-lr', type=float, default=1e-4)
     parser.add_argument('--batch-size', type=int, default=1024)
     parser.add_argument('--num-timesteps', type=int, default=1000) 
     parser.add_argument('--steps', type=int, default=100, help="num_iters")
     parser.add_argument('--steps-per-print', type=int, default=200)
-    parser.add_argument('--dataset-size', type=int, default=8192)
+    parser.add_argument('--dataset-size', type=int, default=256)
     parser.add_argument('--seed', type=int, default=5678)
     parser.add_argument('--unroll1', type=int, default=1)
     parser.add_argument('--unroll2', type=int, default=1)
     parser.add_argument('--t0', type=float, default=0.0, required=False)
     parser.add_argument('--t1', type=float, default=64.0, required=False)
-    unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
+    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50]
     # test code
     args = parser.parse_args()
     # warm up run

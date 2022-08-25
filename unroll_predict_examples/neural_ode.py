@@ -10,6 +10,7 @@ import jax.random as jrandom
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
 from dataclasses import dataclass
+import jax.tree_util as jtu
 import sys; 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
@@ -106,7 +107,7 @@ class NeuralODE(eqx.Module):
         # step Arithmetic Intensity
         features.append(step_flops / step_bytes_access)
 
-        total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+        total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.step, eqx.is_array)))
 
         # total params
         features.append(total_params / 1e6)
@@ -208,10 +209,10 @@ def train(args):
     features.append(args.batch_size)
     features.append(args.num_timesteps)
     compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/compile2.txt")
+    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
 
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/run2.txt")
+    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
     optim = optax.adabelief(args.lr)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
     
@@ -268,13 +269,13 @@ def train(args):
     del model
 
 def main():
-    unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
+    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 80, 100]
     args = Args (
             batch_size=32,
             lr=3e-3,
             dataset_size=256,
             num_timesteps=1000,
-            num_iters=500,
+            num_iters=1000,
             depth=4,
             width_size=64,
             unroll=1,

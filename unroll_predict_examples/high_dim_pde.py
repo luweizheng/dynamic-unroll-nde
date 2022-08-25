@@ -9,6 +9,7 @@ import optax
 from typing import Sequence, Callable
 import equinox as eqx
 import xgboost as xgb
+import jax.tree_util as jtu
 import sys; 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
@@ -152,7 +153,7 @@ class NeuralFBSDE(eqx.Module):
         # step Arithmetic Intensity
         features.append(step_flops / step_bytes_access)
 
-        total_params = sum(p.size for p in jax.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+        total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.step, eqx.is_array)))
 
         # total params
         features.append(total_params / 1e6)
@@ -197,17 +198,6 @@ class NeuralFBSDE(eqx.Module):
 def sum_square_error(y, y_pred):
     """Computes the sum of square error."""
     return jnp.sum(jnp.square(y - y_pred))
-
-# def fetch_minibatch(rng):  # Generate time + a Brownian motion
-#     T = 1.0
-#     M = batch_size
-#     N = num_timesteps
-#     D = dim
-
-#     dt = T / N * jnp.ones((M, 1))
-#     dW = jnp.sqrt(T / N) * jrandom.normal(rng, shape=(M, N, D))
-
-#     return dt, dW
 
 def g_fn(X):
     return jnp.sum(X ** 2, axis=-1, keepdims=True)
@@ -257,10 +247,10 @@ def train(args):
     features.append(args.num_timesteps)
 
     compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/compile2.txt")
+    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
 
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/run2.txt")
+    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
 
     def cost_fn(unroll):
         cur_features = features + [unroll]
@@ -330,17 +320,17 @@ def train(args):
     del model
 
 def main():
-    unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
+    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 80, 100]
     # test code
     args = Args(batch_size=128, 
                 dt=0.2,
                 dim=100,
-                num_timesteps=100,
+                num_timesteps=1000,
                 num_iters=1000, 
                 depth=3, 
                 width_size=64,
                 unroll=20,
-                search_method="sa_our")
+                search_method="exhaustive")
     # warm up run
     train(args)
     for unroll in unroll_list:
