@@ -265,7 +265,7 @@ def train(args):
     total_time = time.time() - start_time
     print(f"unroll: {args.unroll}, actuall time: {total_time}")
 
-
+    del model
 
 def main():
     unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]

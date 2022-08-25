@@ -1,1 +1,1 @@
-python sde-gans.py > ./logs/sde-gans.log
+python sde-gans.py > ./logs/sde-gans.log 2>&1 &
