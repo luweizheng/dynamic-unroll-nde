@@ -173,6 +173,7 @@ def train(args):
         model, opt_state = train_step(model, x, y, opt, opt_state)
         if itr == 0:
             compile_time = time.time()
+    collection.append(args.unroll)
     collection.append(compile_time - start_time)
     collection.append(time.time() - compile_time)
     print(','.join(map(str, collection)))
@@ -188,9 +189,9 @@ class Args:
      
 
 if __name__ == '__main__':
-    args = Args(batch_size=64, 
-                num_timesteps=1000, 
-                num_iters=16000, 
+    args = Args(batch_size=128, 
+                num_timesteps=2000, 
+                num_iters=200000, 
                 unroll=1)
     
     # warm up

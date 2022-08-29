@@ -347,7 +347,7 @@ def main():
     print("unroll, compile_time, execute_time, total_time")
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--num_timesteps', type=int, default=1000)
+    parser.add_argument('--num_timesteps', type=int, default=2000)
     
     cli_args = parser.parse_args()
     batch_size = cli_args.batch_size
@@ -366,7 +366,7 @@ def main():
     # dummy run
     train(args)
 
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 80, 100]
+    unroll_list = [49, 51]
     
     for unroll in unroll_list:
         args.unroll = unroll

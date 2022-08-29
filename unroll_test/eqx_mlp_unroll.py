@@ -125,7 +125,7 @@ if __name__ == '__main__':
     #warm up 
     run(args)
     
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 100]
+    unroll_list = [49,51]
     for unroll in unroll_list:
         args.unroll = unroll
         
