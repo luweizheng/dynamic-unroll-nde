@@ -6,61 +6,168 @@ import mindspore as ms
 import mindspore.ops as P
 import mindspore.dataset as ds
 import mindspore.common.dtype as mstype
+from dataclasses import dataclass
 
-class MLP(nn.Cell):
-    """
-    """
-    def __init__(self):
-        super(MLP, self).__init__()
-        self.dense1 = nn.Dense(in_channels=64, out_channels=64)
-        self.relu = nn.ReLU()
+@dataclass
+class Args:
+    batch_size: int
 
-    def construct(self, x):
-        # 使用定义好的运算构建前向网络
-        x = self.dense1(x)
-        x = self.relu(x)
-        return x
-
-
-class Conv(nn.Cell):
-    """
-    """
-    def __init__(self):
-        super(Conv, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=16, out_channels=64, kernel_size=3, pad_mode="same")
-        self.conv2 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, pad_mode="same")
-        self.conv3 = nn.Conv2d(in_channels=256, out_channels=16, kernel_size=3, pad_mode="same")
-        self.relu = nn.ReLU()
-
-    def construct(self, x):
-        # 使用定义好的运算构建前向网络
-        x = self.conv1(x)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = self.relu(x)
-        x = self.conv3(x)
-        return x
-
-
-class Unroll(nn.Cell):
-    def __init__(self):
-        super(Unroll, self).__init__()
-        self.mlp = MLP()
-        self.unroll = 250
+    # dim of SDE
+    hidden_size: int
+    noise_size: int 
+    num_timesteps: int
+    num_iters: int
     
-    def construct(self, x, num_steps):
+    # network
+    mu_depth: int
+    mu_width_size: int
+    sigma_depth: int
+    sigma_width_size: int
+    
+    # dynamic unroll
+    unroll: int
+    T: float = 1.0
+    
+class MuField(nn.Cell):
+
+    def __init__(self, hidden_size, width_size, **kwargs):
+        super().__init__(**kwargs)
+        self.d1 = nn.Dense(in_channels=hidden_size + 1, out_channels=width_size)
+        self.d2 = nn.Dense(in_channels=width_size, out_channels=width_size)
+        self.d3 = nn.Dense(in_channels=width_size, out_channels=width_size)
+        self.d4 = nn.Dense(in_channels=width_size, out_channels=hidden_size)
+        self.relu = nn.ReLU()
+        self.tanh = nn.Tanh()
+    def construct(self, t, y):
+        x = mnp.concatenate([t, y], axis=1)
+        x = self.d1(x)
+        x = self.relu(x)
+        x = self.d2(x)
+        x = self.relu(x)
+        x = self.d3(x)
+        x = self.relu(x)
+        x = self.d4(x)
+        x = self.tanh(x)
+        return x
+
+@ms.ms_function
+def lipswish(x):
+    return 0.909 * x * nn.LogSigmoid()(x)
+
+class SigmaField(nn.Cell):
+    noise_size: int
+    hidden_size: int
+
+    def __init__(
+        self, noise_size, hidden_size, width_size,  **kwargs):
+        super().__init__(**kwargs)
+        self.d1 = nn.Dense(in_channels=hidden_size + 1, out_channels=width_size)
+        self.d2 = nn.Dense(in_channels=width_size, out_channels=width_size)
+        self.d3 = nn.Dense(in_channels=width_size, out_channels=width_size)
+        self.d4 = nn.Dense(in_channels=width_size, out_channels=hidden_size)
+        self.lipswish = lipswish
+        self.noise_size = noise_size
+        self.hidden_size = hidden_size
+
+    def __call__(self, t, y):
+        x = mnp.concatenate([t, y], axis=1)
+        x = self.d1(x)
+        x = self.lipswish(x)
+        x = self.d2(x)
+        x = self.lipswish(x)
+        x = self.d3(x)
+        x = self.lipswish(x)
+        x = self.d4(x)
+        x = self.tanh(x)
+        return x.reshape(self.noise_size, self.hidden_size)
+
+
+class SDEStep(nn.Cell):
+    mf: MuField  # drift
+    sf: SigmaField  # diffusion
+    noise_size: int
+
+    def __init__(
+        self,
+        noise_size,
+        hidden_size,
+        mu_width_size,
+        sigma_width_size,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        self.mf = MuField(hidden_size, mu_width_size)
+        self.sf = SigmaField(
+            noise_size, hidden_size, sigma_width_size)
+
+        self.noise_size = noise_size
+
+    def construct(self, carry):
+        (i, t0, dt, y) = carry
+        t = t0 + i * dt
+        bm = mnp.randn((self.noise_size, )) * mnp.sqrt(dt)
+        drift_term = self.mf(t=t, y=y) * dt
+        diffusion_term = mnp.dot(self.sf(t=t, y=y0), bm)
+        y = y + drift_term + diffusion_term
+        carry = (i+1, t0, dt, y)
+
+        return carry, y
+
+
+class NeuralSDE(nn.Cell):
+    step: SDEStep
+    noise_size: int
+    hidden_size: int
+    mu_depth: int
+    sigma_depth: int
+    mu_width_size: int
+    sigma_width_size: int
+
+
+    def __init__(
+        self,
+        noise_size,
+        hidden_size,
+        mu_width_size,
+        sigma_width_size,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+
+        self.step = SDEStep(noise_size=noise_size,
+            hidden_size=hidden_size,
+            mu_width_size=mu_width_size,
+            sigma_width_size=sigma_width_size)
+
+        self.noise_size = noise_size
+        self.hidden_size = hidden_size
+        self.mu_width_size = mu_width_size
+        self.sigma_width_size = sigma_width_size
+    
+    def construct(self, y0, t0, dt, num_timesteps, unroll):
+
+        # batch_size, _  = y0.shape
         i = P.ScalarToTensor()(0, mstype.int64)
-        steps = num_steps / self.unroll
+        rem = num_timesteps % unroll
+        steps = num_timesteps // unroll
+        carry = (0, t0, dt, y0)
         while i < steps:
-            for j in range(self.unroll):
-                x = self.mlp(x)
+            for j in range(unroll):
+                carry, _ = self.step(carry)
             i += 1
         
-        return x
+        while i < rem:
+            carry, _ = self.step(carry)
+            i += 1
+            
+        return carry
 
-network = MLP()
 
-x = mnp.ones(shape=(128, 64))
+
+
+y0 = mnp.ones(shape=(128, 64))
 
 num_steps = mnp.asarray(500)
 
@@ -71,14 +178,21 @@ context.set_context(
         save_graphs=False
 )
 
-model = Unroll()
+model = NeuralSDE(64, 64,64,64)
 
-start = time.time()
-y_pred = model(x, num_steps)
-end = time.time()
-print(f"time: {end - start}")
+t0 = mnp.zeros(shape=(128, 1))
 
-start = time.time()
-y_pred = model(x, num_steps)
-end = time.time()
-print(f"time: {end - start}")
+_, _, _, ans = model(y0, t0, 0.1, num_steps, unroll=1)
+
+print(ans)
+
+
+# start = time.time()
+# y_pred = model(x, num_steps)
+# end = time.time()
+# print(f"time: {end - start}")
+
+# start = time.time()
+# y_pred = model(x, num_steps)
+# end = time.time()
+# print(f"time: {end - start}")

@@ -119,11 +119,11 @@ class NeuralODE(eqx.Module):
         features.append(self.depth)
         #width_size barrel
         features.append(self.depth)
-        # depth of width <= 64
-        features.append(0)
         # depth of width <= 128
         features.append(0)
         # depth of width <= 256
+        features.append(0)
+        # depth of width <= 512
         features.append(0)
         
         return features
@@ -221,13 +221,13 @@ def train(args):
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred * 10
+        total_time_pred = compilation_time_pred + run_time_pred * 5
         
         return total_time_pred
     
     if args.search_method == "exhaustive":
         # exhaustively iterate a list of candidates
-        unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
+        unroll_list = [1, 2, 5, 8, 10, 20, 40, 50]
         total_time_pred_list = []
         for unroll in unroll_list:
             total_time_pred = cost_fn(unroll)
@@ -269,22 +269,24 @@ def train(args):
     del model
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 80, 100]
+    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100, 200]
     args = Args (
-            batch_size=32,
+            batch_size=64,
             lr=3e-3,
-            dataset_size=256,
-            num_timesteps=1000,
-            num_iters=1000,
-            depth=4,
+            dataset_size=32,
+            num_timesteps=200,
+            num_iters=500,
+            depth=3,
             width_size=64,
             unroll=1,
             seed=5678)
     # warm up
     train(args)
+    args.search_method = 'sa_scipy'
     for unroll in unroll_list:
         args.unroll = unroll
         train(args)
+        args.search_method = 'sa_our'
 
 
 if __name__ == '__main__':

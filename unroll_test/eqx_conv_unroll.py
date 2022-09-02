@@ -39,15 +39,24 @@ class ODEfunc(eqx.Module):
     norm2:eqx.nn.GroupNorm
     conv2: ConcatConv2d
     norm3:eqx.nn.GroupNorm
+    
+    # add two conv layer
+    conv3: ConcatConv2d
+    norm4: eqx.nn.GroupNorm
+    conv4: ConcatConv2d
+    norm5: eqx.nn.GroupNorm
     def __init__(self, dim, *, key):
-        keys = jr.split(key, 2)
+        keys = jr.split(key, 4)
         self.norm1 = eqx.nn.GroupNorm(32, dim)
         self.relu = jnn.relu
         self.conv1 = ConcatConv2d(dim, dim, 3, 1, 1, key=keys[0])
         self.norm2 = eqx.nn.GroupNorm(min(32, dim), dim)
         self.conv2 = ConcatConv2d(dim, dim, 3, 1, 1, key=keys[1])
         self.norm3 = eqx.nn.GroupNorm(32, dim)
-
+        self.conv3 = ConcatConv2d(dim, dim, 3, 1, 1, key=keys[2])
+        self.norm4 = eqx.nn.GroupNorm(min(32, dim), dim)
+        self.conv4 = ConcatConv2d(dim, dim, 3, 1, 1, key=keys[3])
+        self.norm5 = eqx.nn.GroupNorm(32, dim)
     def __call__(self, t, x):
         out = self.norm1(x)
         out = self.relu(out)
@@ -56,6 +65,12 @@ class ODEfunc(eqx.Module):
         out = self.relu(out)
         out = self.conv2(t, out)
         out = self.norm3(out)
+        out = self.relu(out)
+        out = self.conv3(t, out)
+        out = self.norm4(out)
+        out = self.relu(out)
+        out = self.conv4(t, out)
+        out = self.norm5(out)
         return out 
 
 
@@ -158,8 +173,6 @@ def train_step(model, x, y, opt, opt_state):
 
 def train(args):
     collection = []
-    # collection.append(args.arch)
-    # collection.append(args.unroll)
     key = jax.random.PRNGKey(0)
     lr = 0.1
     opt = optax.sgd(lr, momentum=0.9)
@@ -197,7 +210,7 @@ if __name__ == '__main__':
     # warm up
     train(args)
     
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50, 100]
+    unroll_list = [1, 2, 5, 8, 10, 20, 50, 100]
     for unroll in unroll_list:
         args.unroll = unroll
         train(args) 

@@ -142,12 +142,13 @@ class NeuralCDE(eqx.Module):
         # depth
         features.append(self.depth)
         #width_size barrel
-        features.append(0)
-        # depth of width <= 64
-        features.append(0)
-        # depth of width <= 128
+        # depth of width <=128
         features.append(self.depth)
         # depth of width <= 256
+        features.append(0)
+        # depth of width <= 512
+        features.append(0)
+        # depth of width > 512
         features.append(0)
         
         return features
@@ -228,7 +229,7 @@ def train(args):
     
     features = model.make_cost_model_feature(args.num_timesteps)
     features.append(args.batch_size)
-    features.append(args.num_timesteps)
+    features.append(args.num_timesteps // 5)
     
     compile_model_loaded = xgb.Booster()
     compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
@@ -242,13 +243,13 @@ def train(args):
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred 
+        total_time_pred = compilation_time_pred + run_time_pred * 5
         
         return total_time_pred
     
     if args.search_method == "exhaustive":
         # exhaustively iterate a list of candidates
-        unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
+        unroll_list = [2, 5, 8, 10, 20, 40, 50]
         total_time_pred_list = []
         for unroll in unroll_list:
             total_time_pred = cost_fn(unroll)
@@ -256,14 +257,14 @@ def train(args):
         predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
     elif args.search_method == "sa_scipy":
         # dual annealing from scipy
-        bounds = [[2, args.num_timesteps // 2]]
+        bounds = [[2, args.num_timesteps // 5]]
         from scipy.optimize import dual_annealing
 
         result = dual_annealing(cost_fn, bounds, maxiter=20)
         predicted_unroll = result['x']
     elif args.search_method == "sa_our":
         # my own implementation of SA
-        bounds = (2, args.num_timesteps // 2)
+        bounds = (2, args.num_timesteps // 5)
 
         def clip(x, bounds):
             """ Force x to be in the interval."""
@@ -313,14 +314,14 @@ def train(args):
     del model
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 15, 20, 30, 40, 50]
-    args = Args(batch_size=32,
+    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50]
+    args = Args(batch_size=64,
                 lr=1e-2,
                 dataset_size=256,
                 add_noise=False,
                 num_timesteps=1000,
                 num_iters=500,
-                hidden_size=8,
+                hidden_size=32,
                 depth=3,
                 width_size=128,
                 unroll=1,
@@ -328,10 +329,11 @@ def main():
     
     #warm up
     train(args)
-    
+    args.search_method = "sa_scipy"
     for unroll in unroll_list:
         args.unroll = unroll
         train(args)
+        args.search_method = "sa_our"
     
 if __name__ == '__main__':
     main()

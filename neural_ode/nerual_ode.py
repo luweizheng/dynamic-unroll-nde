@@ -182,7 +182,7 @@ def main():
             batch_size=32,
             lr=3e-3,
             dataset_size=256,
-            num_timesteps=1000,
+            num_timesteps=200,
             num_iters=500,
             length=1,
             depth=4,

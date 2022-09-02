@@ -639,13 +639,13 @@ def train(
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred 
+        total_time_pred = compilation_time_pred + run_time_pred * 5
         
         return total_time_pred
 
     if search_method == "exhaustive":
         # exhaustively iterate a list of candidates
-        unroll_list = [2, 5, 8, 10, 15, 20, 30, 40, 50]
+        unroll_list = [2, 5, 8, 10, 20, 40, 50]
         total_time_pred_list1 = []
         total_time_pred_list2 = []
         cost_fn1 = lambda gen_features, unroll: raw_cost_fn(gen_features, unroll)

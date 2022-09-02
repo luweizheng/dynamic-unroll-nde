@@ -18,6 +18,9 @@ import jax.tree_util as jtu
 # We use GPU as the default backend.
 # If you want to use cpu as backend, uncomment the following line.
 # config.update("jax_platform_name", "cpu")
+import os
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+
 
 def lipswish(x):
     return 0.909 * jnn.silu(x)
@@ -111,6 +114,7 @@ class SDEStep(eqx.Module):
 
         return carry, y1
 
+
 class NeuralSDE(eqx.Module):
     step: SDEStep
     noise_size: int
@@ -119,7 +123,6 @@ class NeuralSDE(eqx.Module):
     sigma_depth: int
     mu_width_size: int
     sigma_width_size: int
-
 
     def __init__(
         self,
@@ -137,12 +140,12 @@ class NeuralSDE(eqx.Module):
         step_key, _ = jrandom.split(key, 2)
 
         self.step = SDEStep(noise_size=noise_size,
-            hidden_size=hidden_size,
-            mu_width_size=mu_width_size,
-            sigma_width_size=sigma_width_size,
-            mu_depth=mu_depth,
-            sigma_depth=sigma_depth, 
-            key=step_key)
+                            hidden_size=hidden_size,
+                            mu_width_size=mu_width_size,
+                            sigma_width_size=sigma_width_size,
+                            mu_depth=mu_depth,
+                            sigma_depth=sigma_depth,
+                            key=step_key)
 
         self.noise_size = noise_size
         self.hidden_size = hidden_size
@@ -150,7 +153,6 @@ class NeuralSDE(eqx.Module):
         self.sigma_width_size = sigma_width_size
         self.mu_depth = mu_depth
         self.sigma_depth = sigma_depth
-
 
     def make_cost_model_feature(self):
 
@@ -165,14 +167,15 @@ class NeuralSDE(eqx.Module):
         carry = (0, dummy_t0, dummy_dt, dummy_y0, dummy_bm_key)
         hlo_module = jax.xla_computation(step_fn)(carry, None).as_hlo_module()
         client = jax.lib.xla_bridge.get_backend()
-        
-        step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+
+        step_cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(
+            client, hlo_module)
         step_bytes_access = step_cost['bytes accessed']
         step_bytes_access_op0 = step_cost['bytes accessed operand 0 {}']
         step_bytes_access_op1 = step_cost['bytes accessed operand 1 {}']
         step_bytes_access_out = step_cost['bytes accessed output {}']
         step_flops = step_cost['flops']
-        
+
         features = []
         # f0: step bytes access
         features.append(step_bytes_access)
@@ -183,27 +186,28 @@ class NeuralSDE(eqx.Module):
         # f3: out bytes access
         features.append(step_bytes_access_out)
 
-        # f4: step FLOPS 
+        # f4: step FLOPS
         features.append(step_flops)
         # f5: step Arithmetic Intensity
         features.append(step_flops / step_bytes_access)
 
-        total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+        total_params = sum(p.size for p in jtu.tree_leaves(
+            eqx.filter(self.step, eqx.is_array)))
 
         # f6: total params
         features.append(total_params / 1e6)
 
         # f7: the dimension of DE
         features.append(self.hidden_size)
-        
+
         # f8: depth of all MLP, in this case, mu and sigma
         features.append(self.mu_depth + self.sigma_depth)
 
         # count of width
-        w128=0
-        w256=0
-        w512=0
-        w512lg=0
+        w128 = 0
+        w256 = 0
+        w512 = 0
+        w512lg = 0
         for d, w in zip([self.mu_depth, self.sigma_depth], [self.mu_width_size, self.sigma_width_size]):
             if w <= 128:
                 w128 += d
@@ -213,7 +217,7 @@ class NeuralSDE(eqx.Module):
                 w512 += d
             else:
                 w512lg += d
-        
+
         # f9: width <= 128
         features.append(w128)
         # f10: 128 < width <= 256
@@ -231,25 +235,27 @@ class NeuralSDE(eqx.Module):
 
         def step_fn(carry, inp):
             return self.step(carry, inp)
-        
-        ys = solve(step_fn, y0, t0, dt, num_timesteps, unroll, bm_key)
-        
-        return ys
 
+        ys = solve(step_fn, y0, t0, dt, num_timesteps, unroll, bm_key)
+
+        return ys
 
 
 def solve(step, y0, t0, dt, num_timesteps, unroll, bm_key):
     carry = (0, t0, dt, y0, bm_key)
 
-    _, ys = jax.lax.scan(step, carry, xs=None, length=num_timesteps, unroll=unroll)
+    _, ys = jax.lax.scan(step, carry, xs=None,
+                         length=num_timesteps, unroll=unroll)
 
     return ys
+
 
 @eqx.filter_jit
 def loss_fn(model, y0, t0, dt, num_timesteps, unroll, key):
 
-    ys = jax.vmap(model, in_axes=[0, None, None, None, None, None])(y0, t0, dt, num_timesteps, unroll, key)
-    
+    ys = jax.vmap(model, in_axes=[0, None, None, None, None, None])(
+        y0, t0, dt, num_timesteps, unroll, key)
+
     # dummy loss
     loss = jnp.sum(jnp.mean(ys, axis=0))
 
@@ -263,7 +269,7 @@ def grad_loss(model, y0, t0, dt, num_timesteps, unroll, key):
 
 @eqx.filter_jit
 def train_step(model, y0, t0, dt, num_timesteps, optimizer, opt_state, unroll, key):
-   
+
     loss, grads = grad_loss(model, y0, t0, dt, num_timesteps, unroll, key)
 
     updates, opt_state = optimizer.update(grads, opt_state)
@@ -271,20 +277,21 @@ def train_step(model, y0, t0, dt, num_timesteps, optimizer, opt_state, unroll, k
 
     return loss, model
 
+
 def train(args):
 
     key = jrandom.PRNGKey(42)
 
     model = NeuralSDE(
-            args.noise_size,
-            args.hidden_size,
-            args.mu_width_size,
-            args.sigma_width_size,
-            args.mu_depth,
-            args.sigma_depth,
-            key=key,
-        )
-    
+        args.noise_size,
+        args.hidden_size,
+        args.mu_width_size,
+        args.sigma_width_size,
+        args.mu_depth,
+        args.sigma_depth,
+        key=key,
+    )
+
     features = []
 
     # features = model.make_cost_model_feature()
@@ -306,7 +313,8 @@ def train(args):
 
     for step in range(args.num_iters):
         key, _ = jax.random.split(key)
-        loss = train_step(model, y0, 0, 0.1, args.num_timesteps, optimizer, opt_state, unroll=args.unroll, key=key)
+        loss = train_step(model, y0, 0, 0.1, args.num_timesteps,
+                          optimizer, opt_state, unroll=args.unroll, key=key)
 
         if step == 0:
             compile_time = time.time()
@@ -316,11 +324,13 @@ def train(args):
         # if step % 100 == 0 and step > 0:
         #     iter_time_list.append(time.time() - iter_time)
         #     iter_time = time.time()
-    
+
     features.append(compile_time - start_time)
     features.append(time.time() - compile_time)
-    features.append(time.time() - start_time)
     print(','.join(map(str, features)))
+
+    del model
+
 
 @dataclass
 class Args:
@@ -328,46 +338,46 @@ class Args:
 
     # dim of SDE
     hidden_size: int
-    noise_size: int 
+    noise_size: int
     num_timesteps: int
     num_iters: int
-    
+
     # network
     mu_depth: int
     mu_width_size: int
     sigma_depth: int
     sigma_width_size: int
-    
+
     # dynamic unroll
     unroll: int
     T: float = 1.0
 
 
 def main():
-    print("unroll, compile_time, execute_time, total_time")
+    print("unroll, compile_time, execute_time")
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_timesteps', type=int, default=2000)
-    
+
     cli_args = parser.parse_args()
     batch_size = cli_args.batch_size
     num_timesteps = cli_args.num_timesteps
     # warm up run
-    args = Args(batch_size=batch_size, 
-            hidden_size=64,
-            noise_size=64,
-            num_timesteps=num_timesteps,
-            num_iters=1000, 
-            mu_depth=3,
-            mu_width_size=64,
-            sigma_depth=3,
-            sigma_width_size=64,
-            unroll=1)
+    args = Args(batch_size=batch_size,
+                hidden_size=64,
+                noise_size=64,
+                num_timesteps=num_timesteps,
+                num_iters=1000,
+                mu_depth=4,
+                mu_width_size=128,
+                sigma_depth=4,
+                sigma_width_size=128,
+                unroll=1)
     # dummy run
     train(args)
 
-    unroll_list = [49, 51]
-    
+    unroll_list = [1, 2, 5, 8, 10, 20, 50, 100]
+
     for unroll in unroll_list:
         args.unroll = unroll
         train(args)
