@@ -39,16 +39,6 @@ class Args:
     unroll: int 
     seed:int
     search_method: str = "exhaustive"
-    
-    # dataset_size=256,
-    # add_noise=False,
-    # batch_size=32,
-    # lr=1e-2,
-    # steps=20,
-    # hidden_size=8,
-    # width_size=128,
-    # depth=1,
-    # seed=5678,
 
 class Func(eqx.Module):
     mlp: eqx.nn.MLP
@@ -140,10 +130,10 @@ class NeuralCDE(eqx.Module):
         features.append(self.hidden_size)
         
         # depth
-        features.append(self.depth)
+        features.append(self.depth * 2)
         #width_size barrel
         # depth of width <=128
-        features.append(self.depth)
+        features.append(self.depth * 2)
         # depth of width <= 256
         features.append(0)
         # depth of width <= 512
@@ -216,6 +206,74 @@ def dataloader(arrays, batch_size, *, key):
             end = start + batch_size
     
 
+def predict_unroll(args):
+    
+    key = jrandom.PRNGKey(args.seed)
+    train_data_key, test_data_key, model_key, loader_key = jrandom.split(key, 4)
+
+    _, _, _, data_size = get_data(
+        args.dataset_size, args.add_noise, args.num_timesteps,key=train_data_key
+    )
+    
+    model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key)
+    compile_model_loaded = xgb.Booster()
+    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
+    run_model_loaded = xgb.Booster()
+    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
+    features = model.make_cost_model_feature(args.num_timesteps)
+    features.append(args.batch_size)
+    features.append(args.num_timesteps)
+    
+    predict_list=[]
+    
+    def cost_fn(unroll):
+        cur_features = features + [unroll]
+        
+        compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
+        run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
+        total_time_pred = compilation_time_pred + run_time_pred * 50 # suppose 50000 iters then x/1000 * 50000/1000
+        
+        return total_time_pred
+    
+    # exhaustively iterate a list of candidates
+    unroll_list = [2, 5, 8, 10, 20, 40, 50, 100, 200]
+    total_time_pred_list = []
+    for unroll in unroll_list:
+        total_time_pred = cost_fn(unroll)
+        total_time_pred_list.append(total_time_pred)
+    predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
+    
+    predict_list.append(predicted_unroll)
+    
+    # scipy sa
+    bounds = [[2, args.num_timesteps//2]]
+    from scipy.optimize import dual_annealing
+
+    result = dual_annealing(cost_fn, bounds, maxiter=20)
+    predicted_unroll = result['x'][0]
+    
+    predict_list.append(predicted_unroll)
+    
+    # my own implementation of SA
+    bounds = (2, args.num_timesteps//2)
+    def clip(x, bounds):
+        """ Force x to be in the interval."""
+        a, b = bounds
+        return int(max(min(x, b), a))
+
+    def random_neighbour(x, bounds, fraction=1):
+        """Move a little bit x, from the left or the right."""
+        amplitude = (max(bounds) - min(bounds)) * fraction / 10
+        delta = (-amplitude/2.) + amplitude * np.random.random_sample()
+        return clip(x + delta, bounds)
+    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
+    
+    predict_list.append(predicted_unroll)
+    
+    print("exhaustive, sa_scipy, sa_our")
+    print(','.join(map(str, predict_list)))
+    
+    
 
 def train(args):
     key = jrandom.PRNGKey(args.seed)
@@ -226,61 +284,7 @@ def train(args):
     )
     
     model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key)
-    
-    features = model.make_cost_model_feature(args.num_timesteps)
-    features.append(args.batch_size)
-    features.append(args.num_timesteps // 5)
-    
-    compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
-    run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
-    
-    
-    
-    def cost_fn(unroll):
-        cur_features = features + [unroll]
-        
-        compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
-        run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred * 5
-        
-        return total_time_pred
-    
-    if args.search_method == "exhaustive":
-        # exhaustively iterate a list of candidates
-        unroll_list = [2, 5, 8, 10, 20, 40, 50]
-        total_time_pred_list = []
-        for unroll in unroll_list:
-            total_time_pred = cost_fn(unroll)
-            total_time_pred_list.append(total_time_pred)
-        predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
-    elif args.search_method == "sa_scipy":
-        # dual annealing from scipy
-        bounds = [[2, args.num_timesteps // 5]]
-        from scipy.optimize import dual_annealing
 
-        result = dual_annealing(cost_fn, bounds, maxiter=20)
-        predicted_unroll = result['x']
-    elif args.search_method == "sa_our":
-        # my own implementation of SA
-        bounds = (2, args.num_timesteps // 5)
-
-        def clip(x, bounds):
-            """ Force x to be in the interval."""
-            a, b = bounds
-            return int(max(min(x, b), a))
-
-        def random_neighbour(x, bounds, fraction=1):
-            """Move a little bit x, from the left or the right."""
-            amplitude = (max(bounds) - min(bounds)) * fraction / 10
-            delta = (-amplitude/2.) + amplitude * np.random.random_sample()
-            return clip(x + delta, bounds)
-        predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
-    
-    print(f"predicted unroll: {predicted_unroll}")
-    
-    
     @eqx.filter_jit
     def loss(model, ti, label_i, coeff_i, unroll):
         fn = functools.partial(model, unroll=unroll)
@@ -308,32 +312,34 @@ def train(args):
         range(args.num_iters), dataloader((ts, labels) + coeffs, args.batch_size, key=loader_key)
     ):
         bxe, acc, model, opt_state = make_step(model, data_i, opt_state)
-    total_time = time.time() - start_time
-    print(f"unroll: {args.unroll}, actuall time: {total_time}")
-
+        if step == 0:
+            compile_ts = time.time()
+    compile_time = compile_ts - start_time
+    run_time = time.time() - compile_ts
+    print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
     del model
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50]
-    args = Args(batch_size=64,
+    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100, 200]
+    args = Args(batch_size=32,
                 lr=1e-2,
                 dataset_size=256,
                 add_noise=False,
-                num_timesteps=1000,
-                num_iters=500,
-                hidden_size=32,
-                depth=3,
+                num_timesteps=200,
+                num_iters=1000,
+                hidden_size=16,
+                depth=2,
                 width_size=128,
                 unroll=1,
                 seed=5678)
     
     #warm up
     train(args)
-    args.search_method = "sa_scipy"
     for unroll in unroll_list:
         args.unroll = unroll
         train(args)
-        args.search_method = "sa_our"
+
+    predict_unroll(args)
     
 if __name__ == '__main__':
     main()

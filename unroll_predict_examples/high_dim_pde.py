@@ -174,13 +174,13 @@ class NeuralFBSDE(eqx.Module):
 
         # depth: depth of all Dense layers
         features.append(self.depth)
-        # depth of width <= 32
-        features.append(self.depth)
-        # depth of width <= 64
-        features.append(0)
         # depth of width <= 128
-        features.append(0)
+        features.append(self.depth)
         # depth of width <= 256
+        features.append(0)
+        # depth of width <= 512
+        features.append(0)
+        # depth of width > 512
         features.append(0)
 
         return features
@@ -242,6 +242,74 @@ def train_step(model, x0, t0, dt, num_timesteps, optimizer, opt_state, unroll=1,
     return loss, model, opt_state, y
 
 
+def predict_unroll(args):
+    learning_rate = 1e-3
+    rng = jrandom.PRNGKey(0)
+
+    model = NeuralFBSDE(in_size=args.dim + 1, out_size=1,
+                        width_size=args.width_size, depth=args.depth, noise_size=args.dim, key=rng)
+    features = model.make_cost_model_feature()
+    features.append(args.batch_size)
+    features.append(args.num_timesteps)
+
+    compile_model_loaded = xgb.Booster()
+    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
+
+    run_model_loaded = xgb.Booster()
+    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
+    
+    
+    def cost_fn(unroll):
+        cur_features = features + [unroll]
+        
+        compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
+        run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
+        total_time_pred = compilation_time_pred + run_time_pred * 50 # suppose 50000 iters then 200/1000 * 50000/200
+        
+        return total_time_pred
+    
+    # exhaustively iterate a list of candidates
+    unroll_list = [2, 5, 8, 10, 20, 40, 50, 100, 200]
+    total_time_pred_list = []
+    for unroll in unroll_list:
+        total_time_pred = cost_fn(unroll)
+        total_time_pred_list.append(total_time_pred)
+    predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
+    
+    predict_list = []
+    
+    predict_list.append(predicted_unroll)
+    
+    # scipy sa
+    bounds = [[2, args.num_timesteps // 2]]
+    from scipy.optimize import dual_annealing
+
+    result = dual_annealing(cost_fn, bounds, maxiter=20)
+    predicted_unroll = result['x'][0]
+    
+    predict_list.append(predicted_unroll)
+    
+    # my own implementation of SA
+    bounds = (2, args.num_timesteps // 2)
+
+    def clip(x, bounds):
+        """ Force x to be in the interval."""
+        a, b = bounds
+        return int(max(min(x, b), a))
+
+    def random_neighbour(x, bounds, fraction=1):
+        """Move a little bit x, from the left or the right."""
+        amplitude = (max(bounds) - min(bounds)) * fraction / 10
+        delta = (-amplitude/2.) + amplitude * np.random.random_sample()
+        return clip(x + delta, bounds)
+    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
+    
+    predict_list.append(predicted_unroll)
+    
+    print("exhaustive, sa_scipy, sa_our")
+    print(','.join(map(str, predict_list)))
+
+
 def train(args):
     start_ts = time.time()
 
@@ -249,60 +317,7 @@ def train(args):
     rng = jrandom.PRNGKey(0)
 
     model = NeuralFBSDE(in_size=args.dim + 1, out_size=1,
-                        width_size=16, depth=4, noise_size=args.dim, key=rng)
-    features = model.make_cost_model_feature()
-    features.append(args.batch_size)
-    features.append(args.num_timesteps // 5)
-
-    compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
-
-    run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
-
-    def cost_fn(unroll):
-        cur_features = features + [unroll]
-
-        compilation_time_pred = compile_model_loaded.predict(
-            xgb.DMatrix([cur_features]))
-        run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred * 0.5
-
-        return total_time_pred
-
-    if args.search_method == "exhaustive":
-        # exhaustively iterate a list of candidates
-        unroll_list = [2, 5, 8, 10, 20, 40, 50]
-        total_time_pred_list = []
-        for unroll in unroll_list:
-            total_time_pred = cost_fn(unroll)
-            total_time_pred_list.append(total_time_pred)
-        predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
-    elif args.search_method == "sa_scipy":
-        # dual annealing from scipy
-        bounds = [[2, args.num_timesteps // 10]]
-        from scipy.optimize import dual_annealing
-
-        result = dual_annealing(cost_fn, bounds, maxiter=20)
-        predicted_unroll = result['x']
-    elif args.search_method == "sa_our":
-        # my own implementation of SA
-        bounds = (2, args.num_timesteps // 10)
-
-        def clip(x, bounds):
-            """ Force x to be in the interval."""
-            a, b = bounds
-            return int(max(min(x, b), a))
-
-        def random_neighbour(x, bounds, fraction=1):
-            """Move a little bit x, from the left or the right."""
-            amplitude = (max(bounds) - min(bounds)) * fraction / 10
-            delta = (-amplitude/2.) + amplitude * np.random.random_sample()
-            return clip(x + delta, bounds)
-        predicted_unroll, _, _, _ = annealing(
-            bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
-
-    print(f"predicted unroll: {predicted_unroll}")
+                        width_size=args.width_size, depth=args.depth, noise_size=args.dim, key=rng)
 
     # train
     x0 = jnp.array([1.0, 0.5] * int(args.dim / 2))
@@ -323,32 +338,31 @@ def train(args):
 
     compile_time = compile_ts - start_ts
     run_time = time.time() - compile_ts
-    total_time = compile_time + run_time
 
-    print(f"unroll: {args.unroll}, actuall time: {total_time}")
+    print(f"unroll: {args.unroll}, compile_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
 
     del model
 
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100]
+    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100, 200]
     args = Args(batch_size=64,
                 dt=0.2,
                 dim=32,
-                num_timesteps=1000,
-                num_iters=500,
+                num_timesteps=200,
+                num_iters=1000,
                 depth=3,
                 width_size=128,
                 unroll=1,
                 search_method="exhaustive")
     # warm up run
     train(args)
-    args.search_method = "sa_scipy"
     for unroll in unroll_list:
         args.unroll = unroll
         train(args)
-        args.search_method = "sa_our"
 
+    predict_unroll(args)
+    
 
 if __name__ == '__main__':
     main()

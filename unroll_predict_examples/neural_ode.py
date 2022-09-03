@@ -123,7 +123,7 @@ class NeuralODE(eqx.Module):
         features.append(0)
         # depth of width <= 256
         features.append(0)
-        # depth of width <= 512
+        # depth of width  512
         features.append(0)
         
         return features
@@ -196,14 +196,12 @@ def make_step(ti, yi, model, optim, opt_state, unroll):
     model = eqx.apply_updates(model, updates)
     return loss, model, opt_state
 
-def train(args):
+def predict_unroll(args):
     key = jrandom.PRNGKey(args.seed)
     data_key, model_key, loader_key = jrandom.split(key, 3)
 
     ts, ys = get_data(args.dataset_size, args.num_timesteps, key=data_key)
     _, length_size, data_size = ys.shape
-    # _ts = ts[: int(length_size * args.length)]
-    # _ys = ys[:, : int(length_size * args.length)]
     model = NeuralODE(data_size, args.width_size, args.depth, key=model_key)
     features = model.make_cost_model_feature()
     features.append(args.batch_size)
@@ -213,58 +211,77 @@ def train(args):
 
     run_model_loaded = xgb.Booster()
     run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
-    optim = optax.adabelief(args.lr)
-    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    
+    predict_list=[]
     
     def cost_fn(unroll):
         cur_features = features + [unroll]
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred * 5
+        total_time_pred = compilation_time_pred + run_time_pred * 50 # suppose 50000 iters then x/1000 * 50000/1000
         
         return total_time_pred
     
-    if args.search_method == "exhaustive":
-        # exhaustively iterate a list of candidates
-        unroll_list = [1, 2, 5, 8, 10, 20, 40, 50]
-        total_time_pred_list = []
-        for unroll in unroll_list:
-            total_time_pred = cost_fn(unroll)
-            total_time_pred_list.append(total_time_pred)
-        predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
-    elif args.search_method == "sa_scipy":
-        # dual annealing from scipy
-        bounds = [[2, args.num_timesteps // 2]]
-        from scipy.optimize import dual_annealing
-
-        result = dual_annealing(cost_fn, bounds, maxiter=20)
-        predicted_unroll = result['x']
-    elif args.search_method == "sa_our":
-        # my own implementation of SA
-        bounds = (2, args.num_timesteps // 2)
-
-        def clip(x, bounds):
-            """ Force x to be in the interval."""
-            a, b = bounds
-            return int(max(min(x, b), a))
-
-        def random_neighbour(x, bounds, fraction=1):
-            """Move a little bit x, from the left or the right."""
-            amplitude = (max(bounds) - min(bounds)) * fraction / 10
-            delta = (-amplitude/2.) + amplitude * np.random.random_sample()
-            return clip(x + delta, bounds)
-        predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
+    # exhaustively iterate a list of candidates
+    unroll_list = [2, 5, 8, 10, 20, 40, 50, 100, 200]
+    total_time_pred_list = []
+    for unroll in unroll_list:
+        total_time_pred = cost_fn(unroll)
+        total_time_pred_list.append(total_time_pred)
+    predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
     
-    print(f"predicted unroll: {predicted_unroll}")
+    predict_list.append(predicted_unroll)
     
-    start_time = time.time()
+    # scipy sa
+    bounds = [[2, args.num_timesteps//2]]
+    from scipy.optimize import dual_annealing
+
+    result = dual_annealing(cost_fn, bounds, maxiter=20)
+    predicted_unroll = result['x'][0]
+    
+    predict_list.append(predicted_unroll)
+    
+    # my own implementation of SA
+    bounds = (2, args.num_timesteps//2)
+    def clip(x, bounds):
+        """ Force x to be in the interval."""
+        a, b = bounds
+        return int(max(min(x, b), a))
+
+    def random_neighbour(x, bounds, fraction=1):
+        """Move a little bit x, from the left or the right."""
+        amplitude = (max(bounds) - min(bounds)) * fraction / 10
+        delta = (-amplitude/2.) + amplitude * np.random.random_sample()
+        return clip(x + delta, bounds)
+    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
+    
+    predict_list.append(predicted_unroll)
+    
+    print("exhaustive, sa_scipy, sa_our")
+    print(','.join(map(str, predict_list)))
+
+def train(args):
+    key = jrandom.PRNGKey(args.seed)
+    data_key, model_key, loader_key = jrandom.split(key, 3)
+
+    ts, ys = get_data(args.dataset_size, args.num_timesteps, key=data_key)
+    _, length_size, data_size = ys.shape
+    model = NeuralODE(data_size, args.width_size, args.depth, key=model_key)
+    optim = optax.adabelief(args.lr)
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    _ts = ts[: int(length_size)]
+    _ys = ys[:, : int(length_size)]
+    start_ts= time.time()
     for step, (yi,) in zip(
-            range(args.num_iters), dataloader((ys,), args.batch_size, key=loader_key)
+            range(args.num_iters), dataloader((_ys,), args.batch_size, key=loader_key)
         ):
-            loss, model, opt_state = make_step(ts, yi, model, optim ,opt_state, args.unroll)
-    total_time = time.time() - start_time
-    print(f"unroll: {args.unroll}, actuall time: {total_time}")
+            loss, model, opt_state = make_step(_ts, yi, model, optim ,opt_state, args.unroll)
+            if step == 0:
+                compile_ts = time.time()
+    compile_time = compile_ts - start_ts
+    run_time = time.time() - compile_ts
+    print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
 
     del model
 
@@ -275,18 +292,18 @@ def main():
             lr=3e-3,
             dataset_size=32,
             num_timesteps=200,
-            num_iters=500,
+            num_iters=1000,
             depth=3,
             width_size=64,
             unroll=1,
             seed=5678)
     # warm up
     train(args)
-    args.search_method = 'sa_scipy'
     for unroll in unroll_list:
         args.unroll = unroll
         train(args)
-        args.search_method = 'sa_our'
+    
+    predict_unroll(args)
 
 
 if __name__ == '__main__':

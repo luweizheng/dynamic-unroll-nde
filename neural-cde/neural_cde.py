@@ -117,7 +117,7 @@ def main(
     batch_size=32,
     lr=1e-2,
     steps=20,
-    hidden_size=8,
+    hidden_size=16,
     width_size=128,
     depth=1,
     seed=5678,
