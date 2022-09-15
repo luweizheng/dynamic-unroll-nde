@@ -332,47 +332,21 @@ def train(args):
     del model
 
 
-@dataclass
-class Args:
-    batch_size: int
-
-    # dim of SDE
-    hidden_size: int
-    noise_size: int
-    num_timesteps: int
-    num_iters: int
-
-    # network
-    mu_depth: int
-    mu_width_size: int
-    sigma_depth: int
-    sigma_width_size: int
-
-    # dynamic unroll
-    unroll: int
-    T: float = 1.0
-
 
 def main():
     print("unroll, compile_time, execute_time")
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--num_timesteps', type=int, default=2000)
-
-    cli_args = parser.parse_args()
-    batch_size = cli_args.batch_size
-    num_timesteps = cli_args.num_timesteps
-    # warm up run
-    args = Args(batch_size=batch_size,
-                hidden_size=64,
-                noise_size=64,
-                num_timesteps=num_timesteps,
-                num_iters=1000,
-                mu_depth=4,
-                mu_width_size=128,
-                sigma_depth=4,
-                sigma_width_size=128,
-                unroll=1)
+    parser.add_argument('--hidden_size', type=int, default=64)
+    parser.add_argument('--noise_size', type=int, default=64)
+    parser.add_argument('--num_timesteps', type=int, default=100)
+    parser.add_argument('--num_iters', type=int, default=1000)
+    parser.add_argument('--mu_depth', type=int, default=4)
+    parser.add_argument('--mu_width_size', type=int, default=128)
+    parser.add_argument('--sigma_depth', type=int, default=4)
+    parser.add_argument('--sigma_width_size', type=int, default=128)
+    parser.add_argument('--unroll', type=int, default=1)
+    args = parser.parse_args()
     # dummy run
     train(args)
 

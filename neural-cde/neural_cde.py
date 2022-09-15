@@ -10,6 +10,7 @@ import jax.random as jrandom
 import jax.scipy as jsp
 import matplotlib
 import matplotlib.pyplot as plt
+import argparse
 import jax.tree_util as jtu
 import optax  # https://github.com/deepmind/optax
 
@@ -111,25 +112,15 @@ def dataloader(arrays, batch_size, *, key):
             start = end
             end = start + batch_size
 
-def main(
-    dataset_size=256,
-    add_noise=False,
-    batch_size=32,
-    lr=1e-2,
-    steps=20,
-    hidden_size=16,
-    width_size=128,
-    depth=1,
-    seed=5678,
-):
-    key = jrandom.PRNGKey(seed)
+def train(args):
+    key = jrandom.PRNGKey(args.seed)
     train_data_key, test_data_key, model_key, loader_key = jrandom.split(key, 4)
 
     ts, coeffs, labels, data_size = get_data(
-        dataset_size, add_noise, key=train_data_key
+        args.dataset_size, args.add_noise, key=train_data_key
     )
 
-    model = NeuralCDE(data_size, hidden_size, width_size, depth, key=model_key)
+    model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key)
 
 
     @eqx.filter_jit
@@ -151,50 +142,76 @@ def main(
         model = eqx.apply_updates(model, updates)
         return bxe, acc, model, opt_state
 
-    optim = optax.adam(lr)
+    optim = optax.adam(args.lr)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
     for step, data_i in zip(
-        range(steps), dataloader((ts, labels) + coeffs, batch_size, key=loader_key)
+        range(args.num_iters), dataloader((ts, labels) + coeffs, args.batch_size, key=loader_key)
     ):
         start = time.time()
         bxe, acc, model, opt_state = make_step(model, data_i, opt_state)
-        end = time.time()
-        print(
-            f"Step: {step}, Loss: {bxe}, Accuracy: {acc}, Computation time: "
-            f"{end - start}"
-        )
+        if (step % args.print_every) == 0 or step == args.num_iters - 1:
+            end = time.time()
+            print(
+                f"Step: {step}, Loss: {bxe}, Accuracy: {acc}, Computation time: "
+                f"{end - start}"
+            )
 
-    ts, coeffs, labels, _ = get_data(dataset_size, add_noise, key=test_data_key)
+
+    ts, coeffs, labels, _ = get_data(args.dataset_size, args.add_noise, key=test_data_key)
     bxe, acc = loss(model, ts, labels, coeffs)
     print(f"Test loss: {bxe}, Test Accuracy: {acc}")
 
     # Plot results
-    # sample_ts = ts[-1]
-    # sample_coeffs = tuple(c[-1] for c in coeffs)
-    # pred = model(sample_ts, sample_coeffs, evolving_out=True)
-    # interp = diffrax.CubicInterpolation(sample_ts, sample_coeffs)
-    # values = jax.vmap(interp.evaluate)(sample_ts)
-    # fig = plt.figure(figsize=(16, 8))
-    # ax1 = fig.add_subplot(1, 2, 1)
-    # ax2 = fig.add_subplot(1, 2, 2, projection="3d")
-    # ax1.plot(sample_ts, values[:, 1], c="dodgerblue")
-    # ax1.plot(sample_ts, values[:, 2], c="dodgerblue", label="Data")
-    # ax1.plot(sample_ts, pred, c="crimson", label="Classification")
-    # ax1.set_xticks([])
-    # ax1.set_yticks([])
-    # ax1.set_xlabel("t")
-    # ax1.legend()
-    # ax2.plot(values[:, 1], values[:, 2], c="dodgerblue", label="Data")
-    # ax2.plot(values[:, 1], values[:, 2], pred, c="crimson", label="Classification")
-    # ax2.set_xticks([])
-    # ax2.set_yticks([])
-    # ax2.set_zticks([])
-    # ax2.set_xlabel("x")
-    # ax2.set_ylabel("y")
-    # ax2.set_zlabel("Classification")
-    # plt.tight_layout()
-    # plt.savefig("neural_cde.png")
-    # plt.show()
+    if args.plot:
+        sample_ts = ts[-1]
+        sample_coeffs = tuple(c[-1] for c in coeffs)
+        pred = model(sample_ts, sample_coeffs, evolving_out=True)
+        interp = diffrax.CubicInterpolation(sample_ts, sample_coeffs)
+        values = jax.vmap(interp.evaluate)(sample_ts)
+        fig = plt.figure(figsize=(16, 8))
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax2 = fig.add_subplot(1, 2, 2, projection="3d")
+        ax1.plot(sample_ts, values[:, 1], c="dodgerblue")
+        ax1.plot(sample_ts, values[:, 2], c="dodgerblue", label="Data")
+        ax1.plot(sample_ts, pred, c="crimson", label="Classification")
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+        ax1.set_xlabel("t")
+        ax1.legend()
+        ax2.plot(values[:, 1], values[:, 2], c="dodgerblue", label="Data")
+        ax2.plot(values[:, 1], values[:, 2], pred, c="crimson", label="Classification")
+        ax2.set_xticks([])
+        ax2.set_yticks([])
+        ax2.set_zticks([])
+        ax2.set_xlabel("x")
+        ax2.set_ylabel("y")
+        ax2.set_zlabel("Classification")
+        plt.tight_layout()
+        plt.savefig("neural_cde2.png")
+        plt.show()
+        
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=1e-2)
+    parser.add_argument('--dataset-size', type=int, default=256)
+    parser.add_argument('--add-noise', type=bool, default=False)
+    parser.add_argument('--hidden-size', type=int, default=16)
+    parser.add_argument('--width-size', type=int, default=128)
+    parser.add_argument('--depth', type=int, default=2)
+    parser.add_argument('--num-timesteps', type=int, default=200)
+    parser.add_argument('--num-iters', type=int, default=1000)
+    parser.add_argument('--unroll', type=int, default=1)
+    parser.add_argument('--seed', type=int, default=5678)
+    parser.add_argument('--plot', type=bool, default=False)
+    parser.add_argument('--print-every', type=int, default=200)
+
+    args = parser.parse_args()
+    
+    train(args)
+    
+
     
 if __name__ == '__main__':
     main()

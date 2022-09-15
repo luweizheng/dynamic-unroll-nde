@@ -1,6 +1,6 @@
 import time
 from typing import Sequence
-
+import argparse
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -96,7 +96,7 @@ def batch_forward_fn(model, xs, num_steps):
 def run(args):
     collection = []
     # collection.append(args.arch)
-    # collection.append(args.unroll)
+    collection.append(args.unroll)
     key = jrandom.PRNGKey(args.seed)
     model = Unroll(args.hidden_size, args.width_size_list, args.depth, args.unroll, key=key)
     x = jnp.ones((args.batch_size, args.hidden_size))
@@ -112,22 +112,23 @@ def run(args):
 
 
 if __name__ == '__main__':
-    args = Args(
-        batch_size=64,
-        hidden_size=16,
-        num_steps=1000,
-        num_iters=2000,
-        depth=3,
-        width_size_list=[64,64,64],
-        unroll=1,
-    )
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--hidden_size', type=int, default=16)
+    parser.add_argument('--num-timesteps', type=int, default=100)
+    parser.add_argument('--num-iters', type=int, default=1000)
+    parser.add_argument('--depth', type=int, default=3)
+    parser.add_argument('--width-size-list', type=list, default=[64, 64, 64])
+    parser.add_argument('--unroll', type=int, default=1)
+    
+    args = parser.parse_args()
     
     #warm up 
     run(args)
     
-    unroll_list = [49,51]
+    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100]
     for unroll in unroll_list:
         args.unroll = unroll
-        
         run(args)
         

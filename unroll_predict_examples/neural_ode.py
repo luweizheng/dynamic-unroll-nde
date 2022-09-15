@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
 from dataclasses import dataclass
 import jax.tree_util as jtu
+import functools
 import sys; 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
@@ -183,7 +184,6 @@ def dataloader(arrays, batch_size, *, key):
             start = end
             end = start + batch_size
 
-
 @eqx.filter_value_and_grad
 def grad_loss(model, ti, yi, unroll):
     y_pred = jax.vmap(model, in_axes=(None, 0, None))(ti, yi[:, 0], unroll)
@@ -286,22 +286,22 @@ def train(args):
     del model
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100, 200]
+    unroll_list = [1, 2]
     args = Args (
-            batch_size=64,
+            batch_size=32,
             lr=3e-3,
-            dataset_size=32,
+            dataset_size=256,
             num_timesteps=200,
             num_iters=1000,
-            depth=3,
+            depth=4,
             width_size=64,
             unroll=1,
             seed=5678)
     # warm up
-    train(args)
-    for unroll in unroll_list:
-        args.unroll = unroll
-        train(args)
+    # train(args)
+    # for unroll in unroll_list:
+    #     args.unroll = unroll
+    #     train(args)
     
     predict_unroll(args)
 
