@@ -221,7 +221,7 @@ def main():
     parser.add_argument('--depth', type=int, default=2)
     parser.add_argument('--length', type=int, default=1)
     parser.add_argument('--num-timesteps', type=int, default=200) 
-    parser.add_argument('--num-iters', type=int, default=3000)
+    parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)
     parser.add_argument('--plot', type=bool, default=False)
