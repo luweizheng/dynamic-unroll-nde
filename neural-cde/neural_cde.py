@@ -44,12 +44,14 @@ class NeuralCDE(eqx.Module):
     func: Func
     linear: eqx.nn.Linear
     diffrax_solver: bool
-    def __init__(self, data_size, hidden_size, width_size, depth, key, diffrax_solver=False ,**kwargs):
+    unroll: int
+    def __init__(self, data_size, hidden_size, width_size, depth, key, unroll, diffrax_solver=False ,**kwargs):
         super().__init__(**kwargs)
         ikey, fkey, lkey = jrandom.split(key, 3)
         self.initial = eqx.nn.MLP(data_size, hidden_size, width_size, depth, key=ikey)
         self.func = Func(data_size, hidden_size, width_size, depth, key=fkey)
         self.linear = eqx.nn.Linear(hidden_size, 1, key=lkey)
+        self.unroll = unroll
         self.diffrax_solver = diffrax_solver
         
     def step(self, carry, term):
@@ -88,7 +90,7 @@ class NeuralCDE(eqx.Module):
             )
             ys = solution.ys
         else:
-            _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=unroll)
+            _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=self.unroll)
         
         if evolving_out:
             prediction = jax.vmap(lambda y: jnn.sigmoid(self.linear(y))[0])(ys)
@@ -139,7 +141,7 @@ def train(args):
         args.dataset_size, args.add_noise, key=train_data_key
     )
 
-    model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key, diffrax_solver=args.diffrax_solver)
+    model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key, unroll=args.unroll, diffrax_solver=args.diffrax_solver)
 
 
     @eqx.filter_jit

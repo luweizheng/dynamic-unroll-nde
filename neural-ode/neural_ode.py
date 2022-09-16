@@ -37,6 +37,7 @@ class NeuralODE(eqx.Module):
     hidden_size:int
     width_size:int
     depth:int
+    diffrax_solver: bool
 
     def __init__(self, data_size, width_size, depth, key, diffrax_solver=False, **kwargs):
         super().__init__(**kwargs)
@@ -45,7 +46,6 @@ class NeuralODE(eqx.Module):
         self.depth = depth
         self.func = Func(data_size, width_size, depth, key=key)
         self.diffrax_solver = diffrax_solver
-    
     
     def step(self, carry):
         (i, t0, dt, y0) = carry
@@ -242,6 +242,8 @@ def main():
     parser.add_argument('--diffrax-solver', type=bool, default=False)
     
     args = parser.parse_args()
+    
+    print(args.unroll)
     train(args)
     
 
