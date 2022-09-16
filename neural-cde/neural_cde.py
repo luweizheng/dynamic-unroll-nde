@@ -43,13 +43,14 @@ class NeuralCDE(eqx.Module):
     initial: eqx.nn.MLP
     func: Func
     linear: eqx.nn.Linear
-
-    def __init__(self, data_size, hidden_size, width_size, depth, *, key, **kwargs):
+    diffrax_solver: bool
+    def __init__(self, data_size, hidden_size, width_size, depth, key, diffrax_solver=False ,**kwargs):
         super().__init__(**kwargs)
         ikey, fkey, lkey = jrandom.split(key, 3)
         self.initial = eqx.nn.MLP(data_size, hidden_size, width_size, depth, key=ikey)
         self.func = Func(data_size, hidden_size, width_size, depth, key=fkey)
         self.linear = eqx.nn.Linear(hidden_size, 1, key=lkey)
+        self.diffrax_solver = diffrax_solver
         
     def step(self, carry, term):
         (i, t0, dt, y0) = carry
@@ -70,7 +71,25 @@ class NeuralCDE(eqx.Module):
             del inp
             return self.step(carry, term)
         
-        _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=unroll)
+        if self.diffrax_solver:
+            solver = diffrax.Euler()
+            if evolving_out:
+                saveat = diffrax.SaveAt(ts=ts)
+            else:
+                saveat = diffrax.SaveAt(t1=True)
+            solution = diffrax.diffeqsolve(
+                term,
+                solver,
+                ts[0],
+                ts[-1],
+                dt0,
+                y0,
+                saveat=saveat,
+            )
+            ys = solution.ys
+        else:
+            _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=unroll)
+        
         if evolving_out:
             prediction = jax.vmap(lambda y: jnn.sigmoid(self.linear(y))[0])(ys)
         else:
@@ -120,7 +139,7 @@ def train(args):
         args.dataset_size, args.add_noise, key=train_data_key
     )
 
-    model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key)
+    model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key, diffrax_solver=args.diffrax_solver)
 
 
     @eqx.filter_jit
@@ -144,22 +163,29 @@ def train(args):
 
     optim = optax.adam(args.lr)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    
+    start_ts = time.time()
     for step, data_i in zip(
         range(args.num_iters), dataloader((ts, labels) + coeffs, args.batch_size, key=loader_key)
     ):
         start = time.time()
         bxe, acc, model, opt_state = make_step(model, data_i, opt_state)
-        if (step % args.print_every) == 0 or step == args.num_iters - 1:
-            end = time.time()
-            print(
-                f"Step: {step}, Loss: {bxe}, Accuracy: {acc}, Computation time: "
-                f"{end - start}"
-            )
+        if step == 0:
+            compile_ts = time.time()
+        # if (step % args.print_every) == 0 or step == args.num_iters - 1:
+        #     end = time.time()
+        #     print(
+        #         f"Step: {step}, Loss: {bxe}, Accuracy: {acc}, Computation time: "
+        #         f"{end - start}"
+        #     )
+    end_ts = time.time()
+    compile_time = compile_ts - start_ts
+    run_time = end_ts - compile_ts
+    print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
 
-
-    ts, coeffs, labels, _ = get_data(args.dataset_size, args.add_noise, key=test_data_key)
-    bxe, acc = loss(model, ts, labels, coeffs)
-    print(f"Test loss: {bxe}, Test Accuracy: {acc}")
+    # ts, coeffs, labels, _ = get_data(args.dataset_size, args.add_noise, key=test_data_key)
+    # bxe, acc = loss(model, ts, labels, coeffs)
+    # print(f"Test loss: {bxe}, Test Accuracy: {acc}")
 
     # Plot results
     if args.plot:
@@ -206,11 +232,10 @@ def main():
     parser.add_argument('--seed', type=int, default=5678)
     parser.add_argument('--plot', type=bool, default=False)
     parser.add_argument('--print-every', type=int, default=200)
-
+    parser.add_argument('--diffrax-solver', type=bool, default=False)
     args = parser.parse_args()
     
     train(args)
-    
 
     
 if __name__ == '__main__':

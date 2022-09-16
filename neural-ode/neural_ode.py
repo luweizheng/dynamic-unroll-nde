@@ -38,12 +38,13 @@ class NeuralODE(eqx.Module):
     width_size:int
     depth:int
 
-    def __init__(self, data_size, width_size, depth, *, key, **kwargs):
+    def __init__(self, data_size, width_size, depth, key, diffrax_solver=False, **kwargs):
         super().__init__(**kwargs)
         self.hidden_size = data_size
         self.width_size = width_size
         self.depth = depth
         self.func = Func(data_size, width_size, depth, key=key)
+        self.diffrax_solver = diffrax_solver
     
     
     def step(self, carry):
@@ -118,7 +119,19 @@ class NeuralODE(eqx.Module):
             del inp
             return self.step(carry)
         
-        _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=unroll)
+        if self.diffrax_solver:
+            solution = diffrax.diffeqsolve(
+            diffrax.ODETerm(self.func),
+            diffrax.Euler(),
+            t0=ts[0],
+            t1=ts[-1],
+            dt0=ts[1] - ts[0],
+            y0=y0,
+            saveat=diffrax.SaveAt(ts=ts),
+            )
+            ys = solution.ys
+        else:   
+            _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=unroll)
         
         return ys
     
@@ -184,7 +197,7 @@ def train(args):
     _, length_size, data_size = ys.shape
     _ts = ts[: int(length_size * args.length)]
     _ys = ys[:, : int(length_size * args.length)]
-    model = NeuralODE(data_size, args.width_size, args.depth, key=model_key)
+    model = NeuralODE(data_size, args.width_size, args.depth, key=model_key, diffrax_solver=args.diffrax_solver)
     optim = optax.adabelief(args.lr)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
     
@@ -226,6 +239,7 @@ def main():
     parser.add_argument('--seed', type=int, default=5678)
     parser.add_argument('--plot', type=bool, default=False)
     parser.add_argument('--print-every', type=int, default=200)
+    parser.add_argument('--diffrax-solver', type=bool, default=False)
     
     args = parser.parse_args()
     train(args)

@@ -10,6 +10,7 @@ import optax
 import argparse
 from typing import Sequence, Callable
 import equinox as eqx
+import diffrax
 import sys; 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
@@ -92,21 +93,27 @@ class NeuralFBSDE(eqx.Module):
     depth: int
     width_size: int
     
-    def __init__(self, in_size, out_size, width_size, depth, noise_size, key):
+    def __init__(self, in_size, out_size, width_size, depth, noise_size, key, diffrax_solver):
         self.step = FBSDEStep(in_size, out_size, width_size, depth, noise_size, key)
         self.hidden_size  = in_size - 1
         self.depth = depth
         self.width_size = width_size
+        self.diffrax_solver = diffrax_solver
 
 
     def __call__(self, x0, t0, dt, num_timesteps, unroll=1, key=jrandom.PRNGKey(0)):
         
         y0, z0 = self.step.u_and_dudx(t=jnp.zeros((1, )), x=x0)
-
+        
+        control = dt
+        
+        term = diffrax.ControlTerm(self.step, control).to_ode()
+        # TODO: add diffeqsolver support
         carry = (0, t0, dt, x0, y0, z0, key)
 
         def step_fn(carry, inp=None):
             return self.step(carry, inp)
+        
         
         (carry, output) = jax.lax.scan(step_fn, carry, None, length=num_timesteps, unroll=unroll)
         return (carry, output)
@@ -174,7 +181,7 @@ def train(args):
     learning_rate = args.lr
     rng = jrandom.PRNGKey(0)
 
-    model = NeuralFBSDE(in_size=args.dim + 1, out_size=1, width_size=args.width_size, depth=args.depth, noise_size=args.dim, key=rng)
+    model = NeuralFBSDE(in_size=args.dim + 1, out_size=1, width_size=args.width_size, depth=args.depth, noise_size=args.dim, key=rng, diffrax_solvers=args.diffrax_solvers)
 
     # train
     x0 = jnp.array([1.0, 0.5] * int(args.dim / 2))
@@ -249,6 +256,7 @@ def main():
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--print-every', type=int, default=200)
     parser.add_argument('--plot', type=bool, default=False)
+    parser.add_argument('--diffrax-solver', type=bool, default=False)
     
     # test code
     
