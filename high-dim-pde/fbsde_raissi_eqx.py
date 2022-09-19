@@ -105,9 +105,9 @@ class NeuralFBSDE(eqx.Module):
         
         y0, z0 = self.step.u_and_dudx(t=jnp.zeros((1, )), x=x0)
         
-        control = dt
+        # control = dt
         
-        term = diffrax.ControlTerm(self.step, control).to_ode()
+        # term = diffrax.ControlTerm(self.step, control).to_ode()
         # TODO: add diffeqsolver support
         carry = (0, t0, dt, x0, y0, z0, key)
 

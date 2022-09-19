@@ -27,7 +27,7 @@ class Func(eqx.Module):
             key=key,
         )
 
-    def __call__(self, t, y, args):
+    def __call__(self, t, y, args=None):
         return self.mlp(y)
 
 
@@ -66,6 +66,7 @@ class NeuralODE(eqx.Module):
         def step_fn(carry, inp=None):
             del inp
             return self.step(carry)
+        
 
         if self.diffrax_solver:
             solution = diffrax.diffeqsolve(
@@ -80,7 +81,7 @@ class NeuralODE(eqx.Module):
             ys = solution.ys
         else:
             _, ys = jax.lax.scan(step_fn, carry, xs=None,
-                                 length=len(ts), unroll=self.unroll)
+                                    length=len(ts), unroll=self.unroll)
 
         return ys
 
@@ -147,6 +148,7 @@ def train(args):
     _, length_size, data_size = ys.shape
     _ts = ts[: int(length_size * args.length)]
     _ys = ys[:, : int(length_size * args.length)]
+    print(args)
     model = NeuralODE(data_size, args.width_size, args.depth,
                       key=model_key, diffrax_solver=args.diffrax_solver, unroll=args.unroll)
     optim = optax.adabelief(args.lr)
@@ -197,10 +199,10 @@ def main():
     parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)
-    parser.add_argument('--plot', type=bool, default=False)
+    parser.add_argument('--plot', action='store_true')
     parser.add_argument('--print-every', type=int, default=200)
-    parser.add_argument('--diffrax-solver', type=bool, default=False)
-    parser.add_argument('--print-time-use', type=bool, default=False)
+    parser.add_argument('--diffrax-solver', action='store_true')
+    parser.add_argument('--print-time-use', action='store_true')
 
     args = parser.parse_args()
 

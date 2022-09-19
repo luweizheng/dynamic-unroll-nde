@@ -180,10 +180,11 @@ def train(args):
         #         f"Step: {step}, Loss: {bxe}, Accuracy: {acc}, Computation time: "
         #         f"{end - start}"
         #     )
-    end_ts = time.time()
-    compile_time = compile_ts - start_ts
-    run_time = end_ts - compile_ts
-    print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+    if args.print_time_use:
+        end_ts = time.time()
+        compile_time = compile_ts - start_ts
+        run_time = end_ts - compile_ts
+        print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
 
     # ts, coeffs, labels, _ = get_data(args.dataset_size, args.add_noise, key=test_data_key)
     # bxe, acc = loss(model, ts, labels, coeffs)
@@ -232,9 +233,11 @@ def main():
     parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)
-    parser.add_argument('--plot', type=bool, default=False)
+    parser.add_argument('--plot', type=bool, action='store_true')
     parser.add_argument('--print-every', type=int, default=200)
-    parser.add_argument('--diffrax-solver', type=bool, default=False)
+    parser.add_argument('--diffrax-solver', action='store_true')
+    parser.add_argument('--print-time-use', action='store_true')
+    
     args = parser.parse_args()
     
     train(args)
