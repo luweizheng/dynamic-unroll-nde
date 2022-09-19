@@ -33,6 +33,9 @@ class Args:
     # dynamic unroll
     unroll: int 
     seed:int
+    
+    # max steps
+    max_steps: int
     search_method: str = "exhaustive"
 
 class Func(eqx.Module):
@@ -254,7 +257,7 @@ def predict_unroll(args):
         amplitude = (max(bounds) - min(bounds)) * fraction / 10
         delta = (-amplitude/2.) + amplitude * np.random.random_sample()
         return clip(x + delta, bounds)
-    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
+    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=args.max_steps, debug=False)
     
     predict_list.append(predicted_unroll)
     
@@ -296,6 +299,7 @@ def main():
             depth=4,
             width_size=64,
             unroll=1,
+            max_steps=5,
             seed=5678)
     # warm up
     # train(args)
@@ -303,7 +307,10 @@ def main():
     #     args.unroll = unroll
     #     train(args)
     
-    predict_unroll(args)
+    max_steps = [5, 10, 15, 20, 25, 30, 45, 50, 80, 100]
+    for s in max_steps:
+        args.max_steps = s
+        predict_unroll(args)
 
 
 if __name__ == '__main__':

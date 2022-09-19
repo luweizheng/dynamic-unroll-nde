@@ -326,7 +326,7 @@ def train(args):
         #     iter_time = time.time()
 
     features.append(compile_time - start_time)
-    features.append(time.time() - start_time) # change to end2end time
+    features.append(time.time() -  start_time) # change to end2end time
     print(','.join(map(str, features)))
 
     del model
@@ -334,13 +334,13 @@ def train(args):
 
 
 def main():
-    print("unroll, compile_time, run_time")
+    print("unroll, compile_time, total_time")
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--hidden-size', type=int, default=64)
     parser.add_argument('--noise_size', type=int, default=64)
     parser.add_argument('--num-timesteps', type=int, default=100)
-    parser.add_argument('--num-iters', type=int, default=1000)
+    parser.add_argument('--num-iters', type=int, default=200)
     parser.add_argument('--mu-depth', type=int, default=4)
     parser.add_argument('--mu-width-size', type=int, default=128)
     parser.add_argument('--sigma-depth', type=int, default=4)

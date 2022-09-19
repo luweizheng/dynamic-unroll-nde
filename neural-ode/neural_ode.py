@@ -159,6 +159,7 @@ def train(args):
         range(args.num_iters), dataloader(
             (_ys,), args.batch_size, key=loader_key)
     ):
+        print(len(_ts), _ts[1]-_ts[0], _ts[0], _ts[-1])
         loss, model, opt_state = make_step(
             _ts, yi, model, optim, opt_state)
         if step == 0:
