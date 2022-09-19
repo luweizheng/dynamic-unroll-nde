@@ -148,18 +148,17 @@ def train(args):
     _, length_size, data_size = ys.shape
     _ts = ts[: int(length_size * args.length)]
     _ys = ys[:, : int(length_size * args.length)]
-    print(args)
     model = NeuralODE(data_size, args.width_size, args.depth,
                       key=model_key, diffrax_solver=args.diffrax_solver, unroll=args.unroll)
     optim = optax.adabelief(args.lr)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-
     start_ts = time.time()
     for step, (yi,) in zip(
         range(args.num_iters), dataloader(
             (_ys,), args.batch_size, key=loader_key)
     ):
-        print(len(_ts), _ts[1]-_ts[0], _ts[0], _ts[-1])
+        cal_start = time.time()
+        cal_end = time.time()
         loss, model, opt_state = make_step(
             _ts, yi, model, optim, opt_state)
         if step == 0:
@@ -167,7 +166,7 @@ def train(args):
         if (step % args.print_every) == 0 or step == args.num_iters - 1:
             end_ts = time.time()
             print(
-                f"Step: {step}, Loss: {loss}, Computation time: {end_ts - start_ts}")
+                f"Step: {step}, Loss: {loss}, Computation time: {cal_end - cal_start}")
 
     if args.print_time_use:
         compile_time = compile_ts - start_ts
