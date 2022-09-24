@@ -158,13 +158,12 @@ def train(args):
             (_ys,), args.batch_size, key=loader_key)
     ):
         cal_start = time.time()
-        cal_end = time.time()
         loss, model, opt_state = make_step(
             _ts, yi, model, optim, opt_state)
         if step == 0:
             compile_ts = time.time()
         if (step % args.print_every) == 0 or step == args.num_iters - 1:
-            end_ts = time.time()
+            cal_end = time.time()
             print(
                 f"Step: {step}, Loss: {loss}, Computation time: {cal_end - cal_start}")
 
