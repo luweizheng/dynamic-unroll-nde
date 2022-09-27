@@ -82,7 +82,26 @@ class LatentODE(eqx.Module):
         std = jnp.exp(logstd)
         latent = mean + jrandom.normal(key, (self.latent_size,)) * std
         return latent, mean, std
-
+    
+    def rk_4_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = self.func(t0, y0, args=None)
+        k2 = self.func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+        k3 = self.func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
+        k4 = self.func(t1, y0 + dt * (k1 - k2 + k3), args=None)
+        y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+    
+    def euler_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        dy = dt * self.func(t1, y0, args=None)
+        y1 = y0 + dy
+        carry = (i+1, t1, dt, y1)
+        return (carry, y1)
+    
     # Decoder of the VAE
     def _sample(self, ts, latent):
         dt0 = 0.4  # selected as a reasonable choice for this problem
@@ -102,13 +121,9 @@ class LatentODE(eqx.Module):
             return (carry , y1)
 
         def step_fn(carry, input=None):
-            (i, t0, dt, y0) = carry
-            t = t0 + i * dt
-
-            dy = dt * self.func(t, y0, args=None)
-            y1 = y0 + dy
-            carry = (i+1, t0, dt, y1)
-            return (carry, y1)
+            del input
+            return self.rk_4_step_fn(carry)
+        
         
         if self.diffrax_solver:
             sol = diffrax.diffeqsolve(
@@ -122,7 +137,7 @@ class LatentODE(eqx.Module):
             )
             ys = sol.ys
         else:
-            _, ys = jax.lax.scan(rk_4_step_fn, carry, xs=None,
+            _, ys = jax.lax.scan(step_fn, carry, xs=None,
                                     length=len(ts), unroll=self.unroll)
         return jax.vmap(self.hidden_to_data)(ys)
         

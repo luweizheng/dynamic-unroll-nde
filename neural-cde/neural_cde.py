@@ -16,6 +16,10 @@ import optax  # https://github.com/deepmind/optax
 
 matplotlib.rcParams.update({"font.size": 30})
 
+_one_third = 1 / 3
+_two_thirds = 2 / 3
+_one_sixth = 1 / 6
+
 class Func(eqx.Module):
     mlp: eqx.nn.MLP
     data_size: int
@@ -53,11 +57,27 @@ class NeuralCDE(eqx.Module):
         self.linear = eqx.nn.Linear(hidden_size, 1, key=lkey)
         self.unroll = unroll
         self.diffrax_solver = diffrax_solver
+    
+    def func_contr_term(self, term, dt):
+        def f(t, y, args=None):   
+            return term.vf_prod(t, y, args=None, control=dt)
+        return f        
+    
+    def rk_4_step_fn(self, carry, func):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = func(t0, y0, args=None)
+        k2 = func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+        k3 = func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
+        k4 = func(t1, y0 + dt * (k1 - k2 + k3), args=None)
+        y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
         
-    def step(self, carry, term):
+    def euler_step(self, carry, func):
         (i, t0, dt, y0) = carry
         control = dt
-        y1 = (y0**ω + term.vf_prod(t0, y0, args=None, control=control) ** ω).ω
+        y1 = y0 + dt * func(t0, y0, args=None)
         t1 = t0 + dt
         carry = (i+1, t1, dt, y1)
         return (carry , y1)
@@ -67,11 +87,12 @@ class NeuralCDE(eqx.Module):
         term = diffrax.ControlTerm(self.func, control).to_ode()
         dt0 = ts[1] - ts[0]
         y0 = self.initial(control.evaluate(ts[0]))
+        func = self.func_contr_term(term, dt0)
         carry = (0, ts[0], dt0, y0)
         
         def step_fn(carry, inp=None):
             del inp
-            return self.step(carry, term)
+            return self.rk_4_step_fn(carry, func)
         
         if self.diffrax_solver:
             solver = diffrax.Euler()
@@ -83,7 +104,7 @@ class NeuralCDE(eqx.Module):
                 term,
                 solver,
                 ts[0],
-                ts[-1],
+                ts[1],
                 dt0,
                 y0,
                 saveat=saveat,
@@ -237,7 +258,6 @@ def main():
     parser.add_argument('--print-every', type=int, default=200)
     parser.add_argument('--diffrax-solver', action='store_true')
     parser.add_argument('--print-time-use', action='store_true')
-    
     args = parser.parse_args()
     
     train(args)
