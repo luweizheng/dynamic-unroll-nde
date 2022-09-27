@@ -13,12 +13,15 @@ import argparse
 
 matplotlib.rcParams.update({"font.size": 30})
 
+_one_third = 1 / 3
+_two_thirds = 2 / 3
+_one_sixth = 1 / 6
 
 class Func(eqx.Module):
     scale: jnp.ndarray
     mlp: eqx.nn.MLP
 
-    def __call__(self, t, y, args):
+    def __call__(self, t, y, args=None):
         return self.scale * self.mlp(y)
 
 
@@ -84,10 +87,20 @@ class LatentODE(eqx.Module):
     def _sample(self, ts, latent):
         dt0 = 0.4  # selected as a reasonable choice for this problem
         y0 = self.latent_to_hidden(latent)
-        
         t0 = ts[0]
         carry = (0, t0, dt0, y0)
         
+        def rk_4_step_fn(carry, input=None):
+            (i, t0, dt, y0) = carry
+            t1 = t0 + dt
+            k1 = self.func(t0, y0, args=None)
+            k2 = self.func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+            k3 = self.func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
+            k4 = self.func(t1, y0 + dt * (k1 - k2 + k3), args=None)
+            y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
+            carry = (i+1, t1, dt, y1)
+            return (carry , y1)
+
         def step_fn(carry, input=None):
             (i, t0, dt, y0) = carry
             t = t0 + i * dt
@@ -109,7 +122,7 @@ class LatentODE(eqx.Module):
             )
             ys = sol.ys
         else:
-            _, ys = jax.lax.scan(step_fn, carry, xs=None,
+            _, ys = jax.lax.scan(rk_4_step_fn, carry, xs=None,
                                     length=len(ts), unroll=self.unroll)
         return jax.vmap(self.hidden_to_data)(ys)
         
@@ -216,13 +229,12 @@ def train(args):
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     # Plot results
-    # if args.plot:
-    #     num_plots = 1 + (args.num_iters - 1) // args.save_every
-    #     if ((args.num_iters - 1) % args.save_every) != 0:
-    #         num_plots += 1
-    #     fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
-    #     axs[0].set_ylabel("x")
-    #     axs = iter(axs)
+    num_plots = 1 + (args.num_iters - 1) // args.save_every
+    if ((args.num_iters - 1) % args.save_every) != 0:
+        num_plots += 1
+    fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
+    axs[0].set_ylabel("x")
+    axs = iter(axs)
     
     start_ts = time.time()
     for step, (ts_i, ys_i) in zip(
@@ -239,23 +251,21 @@ def train(args):
             print(
                 f"Step: {step}, Loss: {value}, Computation time: {cal_end - cal_start}")
             
-        # if args.plot:
-        #     if (step % args.save_every) == 0 or step == args.num_iters - 1:
-        #         ax = next(axs)
-        #         # Sample over a longer time interval than we trained on. The model will be
-        #         # sufficiently good that it will correctly extrapolate!
-        #         sample_t = jnp.linspace(0, 12, 300)
-        #         sample_y = model.sample(sample_t, key=sample_key)
-        #         sample_t = np.asarray(sample_t)
-        #         sample_y = np.asarray(sample_y)
-        #         ax.plot(sample_t, sample_y[:, 0])
-        #         ax.plot(sample_t, sample_y[:, 1])
-        #         ax.set_xticks([])
-        #         ax.set_yticks([])
-        #         ax.set_xlabel("t")
-    # if args.plot:
-    #     plt.savefig("latent_ode.png")
-    #     plt.show()
+            if (step % args.save_every) == 0 or step == args.num_iters - 1:
+                ax = next(axs)
+                # Sample over a longer time interval than we trained on. The model will be
+                # sufficiently good that it will correctly extrapolate!
+                sample_t = jnp.linspace(0, 12, 300)
+                sample_y = model.sample(sample_t, key=sample_key)
+                sample_t = np.asarray(sample_t)
+                sample_y = np.asarray(sample_y)
+                ax.plot(sample_t, sample_y[:, 0])
+                ax.plot(sample_t, sample_y[:, 1])
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_xlabel("t")
+        plt.savefig("latent_ode.png")
+        plt.show()
     
     if args.print_time_use:
         compile_time = compile_ts - start_ts
@@ -273,7 +283,7 @@ def main():
     parser.add_argument('--width-size', type=int, default=16)
     parser.add_argument('--latent-size', type=int, default=16)
     parser.add_argument('--depth', type=int, default=2)
-    parser.add_argument('--num-timesteps', type=int, default=100)
+    parser.add_argument('--num-timesteps', type=int, default=20)
     parser.add_argument('--num-iters', type=int, default=500)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)

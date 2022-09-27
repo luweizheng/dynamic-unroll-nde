@@ -13,6 +13,10 @@ import jax.tree_util as jtu
 import argparse
 
 
+_one_third = 1 / 3
+_two_thirds = 2 / 3
+_one_sixth = 1 / 6
+
 class Func(eqx.Module):
     mlp: eqx.nn.MLP
 
@@ -62,10 +66,26 @@ class NeuralODE(eqx.Module):
         dt0 = ts[1] - ts[0]
         y0 = y0
         carry = (0, t0, dt0, y0)
+        
+        def rk_4_step_fn(carry, input=None):
+            (i, t0, dt, y0) = carry
+            t1 = t0 + dt
+            k1 = self.func(t0, y0, args=None)
+            k2 = self.func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+            k3 = self.func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
+            k4 = self.func(t1, y0 + dt * (k1 - k2 + k3), args=None)
+            y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
+            carry = (i+1, t1, dt, y1)
+            return (carry , y1)
 
         def step_fn(carry, inp=None):
-            del inp
-            return self.step(carry)
+            (i, t0, dt, y0) = carry
+            t = t0 + i * dt
+
+            dy = dt * self.func(t, y0)
+            y1 = y0 + dy
+            carry = (i+1, t0, dt, y1)
+            return (carry, y1)
         
 
         if self.diffrax_solver:
@@ -80,7 +100,7 @@ class NeuralODE(eqx.Module):
             )
             ys = solution.ys
         else:
-            _, ys = jax.lax.scan(step_fn, carry, xs=None,
+            _, ys = jax.lax.scan(rk_4_step_fn, carry, xs=None,
                                     length=len(ts), unroll=self.unroll)
 
         return ys
