@@ -109,16 +109,6 @@ class LatentODE(eqx.Module):
         t0 = ts[0]
         carry = (0, t0, dt0, y0)
         
-        def rk_4_step_fn(carry, input=None):
-            (i, t0, dt, y0) = carry
-            t1 = t0 + dt
-            k1 = self.func(t0, y0, args=None)
-            k2 = self.func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
-            k3 = self.func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
-            k4 = self.func(t1, y0 + dt * (k1 - k2 + k3), args=None)
-            y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
-            carry = (i+1, t1, dt, y1)
-            return (carry , y1)
 
         def step_fn(carry, input=None):
             del input

@@ -99,6 +99,8 @@ class NeuralFBSDE(eqx.Module):
         self.depth = depth
         self.width_size = width_size
         self.diffrax_solver = diffrax_solver
+        
+    
 
 
     def __call__(self, x0, t0, dt, num_timesteps, unroll=1, key=jrandom.PRNGKey(0)):
