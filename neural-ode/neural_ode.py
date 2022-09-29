@@ -104,7 +104,7 @@ class NeuralODE(eqx.Module):
 
         def step_fn(carry, input=None):
             del input
-            return self.ralston_step_fn(carry)
+            return self.euler_step_fn(carry)
         
 
         if self.diffrax_solver:
@@ -115,7 +115,7 @@ class NeuralODE(eqx.Module):
                 t1=ts[-1],
                 dt0=ts[1] - ts[0],
                 y0=y0,
-                saveat=diffrax.SaveAt(t1=True),
+                saveat=diffrax.SaveAt(ts=ts),
             )
             ys = solution.ys
         else:
@@ -219,7 +219,7 @@ def train(args):
         plt.plot(ts, model_y[:, 1], c="crimson")
         plt.legend()
         plt.tight_layout()
-        plt.savefig("neural_ode.png")
+        plt.savefig("neural_ode_euler.png")
         plt.show()
 
 
@@ -233,8 +233,8 @@ def main():
     parser.add_argument('--width-size', type=int, default=64)
     parser.add_argument('--depth', type=int, default=2)
     parser.add_argument('--length', type=int, default=1)
-    parser.add_argument('--num-timesteps', type=int, default=200)
-    parser.add_argument('--num-iters', type=int, default=1000)
+    parser.add_argument('--num-timesteps', type=int, default=100)
+    parser.add_argument('--num-iters', type=int, default=2000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)
     parser.add_argument('--plot', action='store_true')

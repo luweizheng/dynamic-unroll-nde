@@ -82,8 +82,32 @@ class LatentODE(eqx.Module):
         std = jnp.exp(logstd)
         latent = mean + jrandom.normal(key, (self.latent_size,)) * std
         return latent, mean, std
+
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Ralston's_method
+    def ralston_step_fn(self, carry, func):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = func(t0, y0, args=None)
+        k2 = func(t0 + 0.5 * dt, y0 + 0.5 * k1, args=None)
+        k3 = func(t0 + 3/4 * dt, y0 + 3/4 * k2)
+        y1 = (2 / 9 * k1 + 1 / 3 * k2 + 4 / 9 * k3) * dt + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
     
-    def rk_4_step_fn(self, carry):
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Classic_fourth-order_method
+    def rk4_step_fn(self, carry, func):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        half_dt = dt * 0.5
+        k1 = func(t0, y0, args=None)
+        k2 = func(t0 + half_dt, y0 + half_dt * k1, args=None)
+        k3 = func(t0 + half_dt, y0 + half_dt * k2)
+        k4 = func(t1, y0 + dt * k3, args=None)
+        y1 = (k1 + 2 * (k2 + k3) + k4) * dt * _one_sixth + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+    
+    def rk4_alt_step_fn(self, carry):
         (i, t0, dt, y0) = carry
         t1 = t0 + dt
         k1 = self.func(t0, y0, args=None)
@@ -112,7 +136,7 @@ class LatentODE(eqx.Module):
 
         def step_fn(carry, input=None):
             del input
-            return self.rk_4_step_fn(carry)
+            return self.rk4_alt_step_fn(carry)
         
         
         if self.diffrax_solver:

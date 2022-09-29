@@ -1,3 +1,3 @@
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
-python -u neural_ode.py --num-iters=20 --print-time-use > logs/ode_rk.log 2>&1 &
+python -u neural_ode.py --num-iters=2000 --num-timesteps=100 --diffrax-solver --print-time-use > logs/node_bosh3.log 2>&1 &
