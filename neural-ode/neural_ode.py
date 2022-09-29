@@ -52,7 +52,31 @@ class NeuralODE(eqx.Module):
         self.diffrax_solver = diffrax_solver
         self.unroll = unroll
 
-    def rk_4_step_fn(self, carry):
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Ralston's_method
+    def ralston_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = self.func(t0, y0, args=None)
+        k2 = self.func(t0 + 0.5 * dt, y0 + 0.5 * k1, args=None)
+        k3 = self.func(t0 + 3/4 * dt, y0 + 3/4 * k2)
+        y1 = (2 / 9 * k1 + 1 / 3 * k2 + 4 / 9 * k3) * dt + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+    
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Classic_fourth-order_method
+    def rk4_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        half_dt = dt * 0.5
+        k1 = self.func(t0, y0, args=None)
+        k2 = self.func(t0 + half_dt, y0 + half_dt * k1, args=None)
+        k3 = self.func(t0 + half_dt, y0 + half_dt * k2)
+        k4 = self.func(t1, y0 + dt * k3, args=None)
+        y1 = (k1 + 2 * (k2 + k3) + k4) * dt * _one_sixth + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+
+    def rk4_alt_step_fn(self, carry):
         (i, t0, dt, y0) = carry
         t1 = t0 + dt
         k1 = self.func(t0, y0, args=None)
@@ -80,13 +104,13 @@ class NeuralODE(eqx.Module):
 
         def step_fn(carry, input=None):
             del input
-            return self.rk_4_step_fn(carry)
+            return self.ralston_step_fn(carry)
         
 
         if self.diffrax_solver:
             solution = diffrax.diffeqsolve(
                 diffrax.ODETerm(self.func),
-                diffrax.Euler(),
+                diffrax.Bosh3(),
                 t0=ts[0],
                 t1=ts[-1],
                 dt0=ts[1] - ts[0],
@@ -185,7 +209,7 @@ def train(args):
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
-        print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+        print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time}, total_time: {compile_time + run_time}")
 
     if args.plot:
         plt.plot(ts, ys[0, :, 0], c="dodgerblue", label="Real")
