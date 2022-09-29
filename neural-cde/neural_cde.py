@@ -116,10 +116,10 @@ class NeuralCDE(eqx.Module):
         
         def step_fn(carry, inp=None):
             del inp
-            return self.rk4_alt_step_fn(carry, func)
+            return self.ralston_step_fn(carry, func)
         
         if self.diffrax_solver:
-            solver = diffrax.Euler()
+            solver = diffrax.Bosh3()
             if evolving_out:
                 saveat = diffrax.SaveAt(ts=ts)
             else:
@@ -128,7 +128,7 @@ class NeuralCDE(eqx.Module):
                 term,
                 solver,
                 ts[0],
-                ts[1],
+                ts[-1],
                 dt0,
                 y0,
                 saveat=saveat,

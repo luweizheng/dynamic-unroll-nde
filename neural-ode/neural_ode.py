@@ -104,7 +104,7 @@ class NeuralODE(eqx.Module):
 
         def step_fn(carry, input=None):
             del input
-            return self.euler_step_fn(carry)
+            return self.ralston_step_fn(carry)
         
 
         if self.diffrax_solver:
@@ -209,7 +209,7 @@ def train(args):
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
-        print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time}, total_time: {compile_time + run_time}")
+        print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
 
     if args.plot:
         plt.plot(ts, ys[0, :, 0], c="dodgerblue", label="Real")
