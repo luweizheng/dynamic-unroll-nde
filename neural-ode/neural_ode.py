@@ -104,7 +104,7 @@ class NeuralODE(eqx.Module):
 
         def step_fn(carry, input=None):
             del input
-            return self.ralston_step_fn(carry)
+            return self.euler_step_fn(carry)
         
 
         if self.diffrax_solver:
@@ -115,7 +115,8 @@ class NeuralODE(eqx.Module):
                 t1=ts[-1],
                 dt0=ts[1] - ts[0],
                 y0=y0,
-                saveat=diffrax.SaveAt(ts=ts),
+                max_steps=ts.shape[0],
+                saveat=diffrax.SaveAt(steps=True),
             )
             ys = solution.ys
         else:
@@ -201,15 +202,15 @@ def train(args):
             _ts, yi, model, optim, opt_state)
         if step == 0:
             compile_ts = time.time()
-        if (step % args.print_every) == 0 or step == args.num_iters - 1:
-            cal_end = time.time()
-            print(
-                f"Step: {step}, Loss: {loss}, Computation time: {cal_end - cal_start}")
+        # if (step % args.print_every) == 0 or step == args.num_iters - 1:
+        #     cal_end = time.time()
+        #     print(
+        #         f"Step: {step}, Loss: {loss}, Computation time: {cal_end - cal_start}")
 
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
-        print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+        print(f"{args.unroll}, {compile_time}, {run_time }, {compile_time + run_time}")
 
     if args.plot:
         plt.plot(ts, ys[0, :, 0], c="dodgerblue", label="Real")
@@ -232,9 +233,9 @@ def main():
     parser.add_argument('--dataset-size', type=int, default=256)
     parser.add_argument('--width-size', type=int, default=64)
     parser.add_argument('--depth', type=int, default=2)
-    parser.add_argument('--length', type=int, default=1)
+    parser.add_argument('--length', type=int, default=0.5)
     parser.add_argument('--num-timesteps', type=int, default=100)
-    parser.add_argument('--num-iters', type=int, default=2000)
+    parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)
     parser.add_argument('--plot', action='store_true')

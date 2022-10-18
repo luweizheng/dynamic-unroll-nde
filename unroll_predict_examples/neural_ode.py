@@ -16,6 +16,10 @@ import sys;
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
 
+_one_third = 1 / 3
+_two_thirds = 2 / 3
+_one_sixth = 1 / 6
+
 @dataclass
 class Args:
     batch_size: int
@@ -52,7 +56,7 @@ class Func(eqx.Module):
             key=key,
         )
 
-    def __call__(self, t, y):
+    def __call__(self, t, y, args=None):
         return self.mlp(y)
 
 
@@ -68,6 +72,48 @@ class NeuralODE(eqx.Module):
         self.width_size = width_size
         self.depth = depth
         self.func = Func(data_size, width_size, depth, key=key)
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Ralston's_method
+    def ralston_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = self.func(t0, y0, args=None)
+        k2 = self.func(t0 + 0.5 * dt, y0 + 0.5 * k1, args=None)
+        k3 = self.func(t0 + 3/4 * dt, y0 + 3/4 * k2)
+        y1 = (2 / 9 * k1 + 1 / 3 * k2 + 4 / 9 * k3) * dt + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+    
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Classic_fourth-order_method
+    def rk4_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        half_dt = dt * 0.5
+        k1 = self.func(t0, y0, args=None)
+        k2 = self.func(t0 + half_dt, y0 + half_dt * k1, args=None)
+        k3 = self.func(t0 + half_dt, y0 + half_dt * k2)
+        k4 = self.func(t1, y0 + dt * k3, args=None)
+        y1 = (k1 + 2 * (k2 + k3) + k4) * dt * _one_sixth + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+
+    def rk4_alt_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = self.func(t0, y0, args=None)
+        k2 = self.func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+        k3 = self.func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
+        k4 = self.func(t1, y0 + dt * (k1 - k2 + k3), args=None)
+        y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+    
+    def euler_step_fn(self, carry):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        dy = dt * self.func(t1, y0, args=None)
+        y1 = y0 + dy
+        carry = (i+1, t1, dt, y1)
+        return (carry, y1)
     
     
     def step(self, carry):
@@ -83,7 +129,7 @@ class NeuralODE(eqx.Module):
         
         def step_fn(carry, inp):
             del inp
-            return self.step(carry)
+            return self.ralston_step_fn(carry)
         
         dummy_t0 = 0.0 
         dummy_dt = 0.1
@@ -227,7 +273,7 @@ def predict_unroll(args):
         return total_time_pred
     
     # exhaustively iterate a list of candidates
-    unroll_list = [2, 5, 8, 10, 20, 40, 50, 100, 200]
+    unroll_list = [5, 10, 20, 50, 100]
     total_time_pred_list = []
     for unroll in unroll_list:
         total_time_pred = cost_fn(unroll)
@@ -273,8 +319,8 @@ def train(args):
     model = NeuralODE(data_size, args.width_size, args.depth, key=model_key)
     optim = optax.adabelief(args.lr)
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-    _ts = ts[: int(length_size)]
-    _ys = ys[:, : int(length_size)]
+    _ts = ts[: int(length_size * 0.5)]
+    _ys = ys[:, : int(length_size * 0.5)]
     start_ts= time.time()
     for step, (yi,) in zip(
             range(args.num_iters), dataloader((_ys,), args.batch_size, key=loader_key)
@@ -289,14 +335,13 @@ def train(args):
     del model
 
 def main():
-    unroll_list = [1, 2]
     args = Args (
             batch_size=32,
             lr=3e-3,
             dataset_size=256,
-            num_timesteps=200,
+            num_timesteps=100,
             num_iters=1000,
-            depth=4,
+            depth=2,
             width_size=64,
             unroll=1,
             max_steps=5,
@@ -306,11 +351,7 @@ def main():
     # for unroll in unroll_list:
     #     args.unroll = unroll
     #     train(args)
-    
-    max_steps = [5, 10, 15, 20, 25, 30, 45, 50, 80, 100]
-    for s in max_steps:
-        args.max_steps = s
-        predict_unroll(args)
+    predict_unroll(args)
 
 
 if __name__ == '__main__':

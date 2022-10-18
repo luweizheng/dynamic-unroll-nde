@@ -121,7 +121,7 @@ class NeuralCDE(eqx.Module):
         if self.diffrax_solver:
             solver = diffrax.Bosh3()
             if evolving_out:
-                saveat = diffrax.SaveAt(ts=ts)
+                saveat = diffrax.SaveAt(steps=True)
             else:
                 saveat = diffrax.SaveAt(t1=True)
             solution = diffrax.diffeqsolve(
@@ -131,6 +131,7 @@ class NeuralCDE(eqx.Module):
                 ts[-1],
                 dt0,
                 y0,
+                max_steps=ts.shape[0],
                 saveat=saveat,
             )
             ys = solution.ys
@@ -229,7 +230,7 @@ def train(args):
         end_ts = time.time()
         compile_time = compile_ts - start_ts
         run_time = end_ts - compile_ts
-        print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+        print(f"{args.unroll}, {compile_time},{run_time }, {compile_time + run_time }")
 
     # ts, coeffs, labels, _ = get_data(args.dataset_size, args.add_noise, key=test_data_key)
     # bxe, acc = loss(model, ts, labels, coeffs)
@@ -274,7 +275,7 @@ def main():
     parser.add_argument('--hidden-size', type=int, default=16)
     parser.add_argument('--width-size', type=int, default=128)
     parser.add_argument('--depth', type=int, default=2)
-    parser.add_argument('--num-timesteps', type=int, default=200)
+    parser.add_argument('--num-timesteps', type=int, default=100)
     parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)

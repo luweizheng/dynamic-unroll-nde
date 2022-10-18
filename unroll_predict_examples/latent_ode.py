@@ -127,12 +127,10 @@ class LatentODE(eqx.Module):
         return (carry, y1)
     
     def _sample(self, ts, latent):
-        dt0 = 0.1
+        dt0 = 0.4 
         y0 = self.latent_to_hidden(latent)
         t0 = ts[0]
         carry = (0, t0, dt0, y0)
-        
-        print(len(ts))
         
 
         def step_fn(carry, input=None):
@@ -174,36 +172,9 @@ class LatentODE(eqx.Module):
         return self._loss(ys, pred_ys, mean, std)
 
     # Run just the decoder during inference.
-    def __call__(self, ts, *, key):
+    def sample(self, ts, *, key):
         latent = jrandom.normal(key, (self.latent_size,))
-        dt0 = ts[1] - ts[0]
-        y0 = self.latent_to_hidden(latent)
-        t0 = ts[0]
-        carry = (0, t0, dt0, y0)
-        
-
-        def step_fn(carry, input=None):
-            del input
-            return self.euler_step_fn(carry)
-        
-        
-        if self.diffrax_solver:
-            sol = diffrax.diffeqsolve(
-                diffrax.ODETerm(self.func),
-                diffrax.Euler(),
-                ts[0],
-                ts[-1],
-                dt0,
-                y0,
-                max_steps=ts.shape[0],
-                saveat=diffrax.SaveAt(steps=True),
-            )
-            ys = sol.ys
-        else:
-            _, ys = jax.lax.scan(step_fn, carry, xs=None,
-                                    length=len(ts), unroll=self.unroll)
-        return jax.vmap(self.hidden_to_data)(ys)
-        # return self._sample(ts, latent)
+        return self._sample(ts, latent)
 
 
 def get_data(dataset_size, num_timesteps, *, key):
@@ -268,35 +239,33 @@ def train(args):
         unroll=args.unroll
     )
 
-    # @eqx.filter_value_and_grad
-    # def loss(model, ts_i, ys_i, key_i):
-    #     batch_size, _ = ts_i.shape
-    #     key_i = jrandom.split(key_i, batch_size)
-    #     loss = jax.vmap(model.train)(ts_i, ys_i, key=key_i)
-    #     return jnp.mean(loss)
+    @eqx.filter_value_and_grad
+    def loss(model, ts_i, ys_i, key_i):
+        batch_size, _ = ts_i.shape
+        key_i = jrandom.split(key_i, batch_size)
+        loss = jax.vmap(model.train)(ts_i, ys_i, key=key_i)
+        return jnp.mean(loss)
 
-    # @eqx.filter_jit
-    # def make_step(model, opt_state, ts_i, ys_i, key_i):
-    #     value, grads = loss(model, ts_i, ys_i, key_i)
-    #     key_i = jrandom.split(key_i, 1)[0]
-    #     updates, opt_state = optim.update(grads, opt_state)
-    #     model = eqx.apply_updates(model, updates)
-    #     return value, model, opt_state, key_i
+    @eqx.filter_jit
+    def make_step(model, opt_state, ts_i, ys_i, key_i):
+        value, grads = loss(model, ts_i, ys_i, key_i)
+        key_i = jrandom.split(key_i, 1)[0]
+        updates, opt_state = optim.update(grads, opt_state)
+        model = eqx.apply_updates(model, updates)
+        return value, model, opt_state, key_i
 
-    # optim = optax.adam(args.lr)
-    # opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    optim = optax.adam(args.lr)
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     
     start_ts = time.time()
     for step, (ts_i, ys_i) in zip(
         range(args.num_iters), dataloader((ts, ys), args.batch_size, key=loader_key)
     ):
-        # cal_start = time.time()
-        # value, model, opt_state, train_key = make_step(
-        #     model, opt_state, ts_i, ys_i, train_key
-        # )
-        sample_t = jnp.linspace(0, 12, args.num_timesteps)
-        model(sample_t, key=sample_key)
+        cal_start = time.time()
+        value, model, opt_state, train_key = make_step(
+            model, opt_state, ts_i, ys_i, train_key
+        )
         if step == 0:
             compile_ts = time.time()
         # if (step % args.print_every) == 0 or step == args.num_iters - 1:
@@ -323,19 +292,19 @@ def train(args):
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
-        print(f"{args.unroll}, {compile_time}, {run_time * 10}, {compile_time + run_time * 10}")
+        print(f"{args.unroll}, {compile_time}, {run_time * 20}, {compile_time + run_time * 20}")
             
     
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--lr', type=float, default=1e-2)
-    parser.add_argument('--dataset-size', type=int, default=1000)
-    parser.add_argument('--hidden-size', type=int, default=16)
-    parser.add_argument('--width-size', type=int, default=16)
-    parser.add_argument('--latent-size', type=int, default=16)
-    parser.add_argument('--depth', type=int, default=2)
+    parser.add_argument('--dataset-size', type=int, default=10000)
+    parser.add_argument('--hidden-size', type=int, default=8)
+    parser.add_argument('--width-size', type=int, default=8)
+    parser.add_argument('--latent-size', type=int, default=4)
+    parser.add_argument('--depth', type=int, default=1)
     parser.add_argument('--num-timesteps', type=int, default=20)
     parser.add_argument('--num-iters', type=int, default=500)
     parser.add_argument('--unroll', type=int, default=1)

@@ -18,6 +18,10 @@ sys.path.insert(0, '..')
 from simulated_annealing import annealing
 import numpy as np
 
+_one_third = 1 / 3
+_two_thirds = 2 / 3
+_one_sixth = 1 / 6
+
 @dataclass
 class Args:
     
@@ -84,6 +88,54 @@ class NeuralCDE(eqx.Module):
         self.hidden_size = hidden_size
         self.width_size = width_size
         self.depth = depth
+        
+    def func_contr_term(self, term, dt):
+        def f(t, y, args=None):   
+            return term.vf_prod(t, y, args=None, control=dt)
+        return f        
+
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Ralston's_method
+    def ralston_step_fn(self, carry, func):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = func(t0, y0, args=None)
+        k2 = func(t0 + 0.5 * dt, y0 + 0.5 * k1, args=None)
+        k3 = func(t0 + 3/4 * dt, y0 + 3/4 * k2)
+        y1 = (2 / 9 * k1 + 1 / 3 * k2 + 4 / 9 * k3) * dt + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+    
+    # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Classic_fourth-order_method
+    def rk4_step_fn(self, carry, func):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        half_dt = dt * 0.5
+        k1 = func(t0, y0, args=None)
+        k2 = func(t0 + half_dt, y0 + half_dt * k1, args=None)
+        k3 = func(t0 + half_dt, y0 + half_dt * k2)
+        k4 = func(t1, y0 + dt * k3, args=None)
+        y1 = (k1 + 2 * (k2 + k3) + k4) * dt * _one_sixth + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+
+    def rk4_alt_step_fn(self, carry, func):
+        (i, t0, dt, y0) = carry
+        t1 = t0 + dt
+        k1 = func(t0, y0, args=None)
+        k2 = func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+        k3 = func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
+        k4 = func(t1, y0 + dt * (k1 - k2 + k3), args=None)
+        y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
+        
+    def euler_step_fn(self, carry, func):
+        (i, t0, dt, y0) = carry
+        control = dt
+        y1 = y0 + dt * func(t0, y0, args=None)
+        t1 = t0 + dt
+        carry = (i+1, t1, dt, y1)
+        return (carry , y1)
     
     def make_cost_model_feature(self, num_timesteps):
         key = jrandom.PRNGKey(5678)
@@ -93,9 +145,10 @@ class NeuralCDE(eqx.Module):
         coeffs = coeffs[:,0,:]
         control = diffrax.CubicInterpolation(ts, coeffs)
         term = diffrax.ControlTerm(self.func, control).to_ode()
+        func = self.func_contr_term(term, ts[1]-ts[0])
         def step_fn(carry, inp):
             del inp
-            return self.step(carry, term)
+            return self.ralston_step_fn(carry, func)
         
         dummy_t0 = 0.0 
         dummy_dt = 0.1
@@ -238,7 +291,7 @@ def predict_unroll(args):
         return total_time_pred
     
     # exhaustively iterate a list of candidates
-    unroll_list = [2, 5, 8, 10, 20, 40, 50, 100, 200]
+    unroll_list = [5, 10, 20, 50, 100]
     total_time_pred_list = []
     for unroll in unroll_list:
         total_time_pred = cost_fn(unroll)
@@ -327,7 +380,7 @@ def main():
                 lr=1e-2,
                 dataset_size=256,
                 add_noise=False,
-                num_timesteps=200,
+                num_timesteps=100,
                 num_iters=1000,
                 hidden_size=16,
                 depth=2,
@@ -342,10 +395,7 @@ def main():
     #     args.unroll = unroll
     #     train(args)
 
-    max_steps = [5, 10, 15, 20, 25, 30, 45, 50, 80, 100]
-    for s in max_steps:
-        args.max_steps = s
-        predict_unroll(args)
+    predict_unroll(args)
     
 if __name__ == '__main__':
     main()

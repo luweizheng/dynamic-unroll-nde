@@ -132,12 +132,10 @@ class LatentODE(eqx.Module):
         t0 = ts[0]
         carry = (0, t0, dt0, y0)
         
-        print(len(ts))
-        
 
         def step_fn(carry, input=None):
             del input
-            return self.euler_step_fn(carry)
+            return self.ralston_step_fn(carry)
         
         
         if self.diffrax_solver:

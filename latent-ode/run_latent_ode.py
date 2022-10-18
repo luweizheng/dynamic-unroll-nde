@@ -1,3 +1,5 @@
+
+
 import time
 import diffrax
 import equinox as eqx
@@ -126,30 +128,28 @@ class LatentODE(eqx.Module):
         carry = (i+1, t1, dt, y1)
         return (carry, y1)
     
+    # Decoder of the VAE
     def _sample(self, ts, latent):
-        dt0 = 0.1
+        dt0 = 0.4  # selected as a reasonable choice for this problem
         y0 = self.latent_to_hidden(latent)
         t0 = ts[0]
         carry = (0, t0, dt0, y0)
         
-        print(len(ts))
-        
 
         def step_fn(carry, input=None):
             del input
-            return self.euler_step_fn(carry)
+            return self.ralston_step_fn(carry)
         
         
         if self.diffrax_solver:
             sol = diffrax.diffeqsolve(
                 diffrax.ODETerm(self.func),
-                diffrax.Euler(),
+                diffrax.Bosh3(),
                 ts[0],
                 ts[-1],
                 dt0,
                 y0,
-                max_steps=ts.shape[0],
-                saveat=diffrax.SaveAt(steps=True),
+                saveat=diffrax.SaveAt(ts=ts),
             )
             ys = sol.ys
         else:
@@ -174,36 +174,9 @@ class LatentODE(eqx.Module):
         return self._loss(ys, pred_ys, mean, std)
 
     # Run just the decoder during inference.
-    def __call__(self, ts, *, key):
+    def sample(self, ts, *, key):
         latent = jrandom.normal(key, (self.latent_size,))
-        dt0 = ts[1] - ts[0]
-        y0 = self.latent_to_hidden(latent)
-        t0 = ts[0]
-        carry = (0, t0, dt0, y0)
-        
-
-        def step_fn(carry, input=None):
-            del input
-            return self.euler_step_fn(carry)
-        
-        
-        if self.diffrax_solver:
-            sol = diffrax.diffeqsolve(
-                diffrax.ODETerm(self.func),
-                diffrax.Euler(),
-                ts[0],
-                ts[-1],
-                dt0,
-                y0,
-                max_steps=ts.shape[0],
-                saveat=diffrax.SaveAt(steps=True),
-            )
-            ys = sol.ys
-        else:
-            _, ys = jax.lax.scan(step_fn, carry, xs=None,
-                                    length=len(ts), unroll=self.unroll)
-        return jax.vmap(self.hidden_to_data)(ys)
-        # return self._sample(ts, latent)
+        return self._sample(ts, latent)
 
 
 def get_data(dataset_size, num_timesteps, *, key):
@@ -268,35 +241,40 @@ def train(args):
         unroll=args.unroll
     )
 
-    # @eqx.filter_value_and_grad
-    # def loss(model, ts_i, ys_i, key_i):
-    #     batch_size, _ = ts_i.shape
-    #     key_i = jrandom.split(key_i, batch_size)
-    #     loss = jax.vmap(model.train)(ts_i, ys_i, key=key_i)
-    #     return jnp.mean(loss)
+    @eqx.filter_value_and_grad
+    def loss(model, ts_i, ys_i, key_i):
+        batch_size, _ = ts_i.shape
+        key_i = jrandom.split(key_i, batch_size)
+        loss = jax.vmap(model.train)(ts_i, ys_i, key=key_i)
+        return jnp.mean(loss)
 
-    # @eqx.filter_jit
-    # def make_step(model, opt_state, ts_i, ys_i, key_i):
-    #     value, grads = loss(model, ts_i, ys_i, key_i)
-    #     key_i = jrandom.split(key_i, 1)[0]
-    #     updates, opt_state = optim.update(grads, opt_state)
-    #     model = eqx.apply_updates(model, updates)
-    #     return value, model, opt_state, key_i
+    @eqx.filter_jit
+    def make_step(model, opt_state, ts_i, ys_i, key_i):
+        value, grads = loss(model, ts_i, ys_i, key_i)
+        key_i = jrandom.split(key_i, 1)[0]
+        updates, opt_state = optim.update(grads, opt_state)
+        model = eqx.apply_updates(model, updates)
+        return value, model, opt_state, key_i
 
-    # optim = optax.adam(args.lr)
-    # opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    optim = optax.adam(args.lr)
+    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
+    # Plot results
+    # num_plots = 1 + (args.num_iters - 1) // args.save_every
+    # if ((args.num_iters - 1) % args.save_every) != 0:
+    #     num_plots += 1
+    # fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
+    # axs[0].set_ylabel("x")
+    # axs = iter(axs)
     
     start_ts = time.time()
     for step, (ts_i, ys_i) in zip(
         range(args.num_iters), dataloader((ts, ys), args.batch_size, key=loader_key)
     ):
-        # cal_start = time.time()
-        # value, model, opt_state, train_key = make_step(
-        #     model, opt_state, ts_i, ys_i, train_key
-        # )
-        sample_t = jnp.linspace(0, 12, args.num_timesteps)
-        model(sample_t, key=sample_key)
+        cal_start = time.time()
+        value, model, opt_state, train_key = make_step(
+            model, opt_state, ts_i, ys_i, train_key
+        )
         if step == 0:
             compile_ts = time.time()
         # if (step % args.print_every) == 0 or step == args.num_iters - 1:
@@ -304,34 +282,34 @@ def train(args):
         #     print(
         #         f"Step: {step}, Loss: {value}, Computation time: {cal_end - cal_start}")
             
-            # if (step % args.save_every) == 0 or step == args.num_iters - 1:
-            #     ax = next(axs)
-            #     # Sample over a longer time interval than we trained on. The model will be
-            #     # sufficiently good that it will correctly extrapolate!
-            #     sample_t = jnp.linspace(0, 12, 300)
-            #     sample_y = model.sample(sample_t, key=sample_key)
-            #     sample_t = np.asarray(sample_t)
-            #     sample_y = np.asarray(sample_y)
-            #     ax.plot(sample_t, sample_y[:, 0])
-            #     ax.plot(sample_t, sample_y[:, 1])
-            #     ax.set_xticks([])
-            #     ax.set_yticks([])
-            #     ax.set_xlabel("t")
+        #     if (step % args.save_every) == 0 or step == args.num_iters - 1:
+        #         ax = next(axs)
+        #         # Sample over a longer time interval than we trained on. The model will be
+        #         # sufficiently good that it will correctly extrapolate!
+        #         sample_t = jnp.linspace(0, 12, 300)
+        #         sample_y = model.sample(sample_t, key=sample_key)
+        #         sample_t = np.asarray(sample_t)
+        #         sample_y = np.asarray(sample_y)
+        #         ax.plot(sample_t, sample_y[:, 0])
+        #         ax.plot(sample_t, sample_y[:, 1])
+        #         ax.set_xticks([])
+        #         ax.set_yticks([])
+        #         ax.set_xlabel("t")
         # plt.savefig("latent_ode.png")
         # plt.show()
     
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
-        print(f"{args.unroll}, {compile_time}, {run_time * 10}, {compile_time + run_time * 10}")
+        print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
             
     
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--lr', type=float, default=1e-2)
-    parser.add_argument('--dataset-size', type=int, default=1000)
+    parser.add_argument('--dataset-size', type=int, default=10000)
     parser.add_argument('--hidden-size', type=int, default=16)
     parser.add_argument('--width-size', type=int, default=16)
     parser.add_argument('--latent-size', type=int, default=16)
