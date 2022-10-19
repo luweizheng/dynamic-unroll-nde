@@ -113,13 +113,17 @@ class NeuralFBSDE(eqx.Module):
     hidden_size: int
     depth: int
     width_size: int
+    unroll : int
+    num_timesteps: int
 
-    def __init__(self, in_size, out_size, width_size, depth, noise_size, key):
+    def __init__(self, in_size, out_size, width_size, depth, noise_size, num_timesteps , unroll, key):
         self.step = FBSDEStep(
             in_size, out_size, width_size, depth, noise_size, key)
         self.hidden_size = in_size - 1
         self.depth = depth
         self.width_size = width_size
+        self.unroll =unroll
+        self.num_timesteps = num_timesteps
 
     def make_cost_model_feature(self):
 
@@ -185,17 +189,20 @@ class NeuralFBSDE(eqx.Module):
 
         return features
 
-    def __call__(self, t0, dt, num_timesteps, unroll, x0, key=jrandom.PRNGKey(0)):
+    def __call__(self, t0, dt, x0):
+        
+        key=jrandom.PRNGKey(0)
 
         y0, z0 = self.step.u_and_dudx(t=jnp.zeros((1, )), x=x0)
 
         carry = (0, t0, dt, x0, y0, z0, key)
+        
 
         def step_fn(carry, inp=None):
             return self.step(carry, inp)
 
         (carry, output) = jax.lax.scan(step_fn, carry,
-                                       None, length=num_timesteps, unroll=unroll)
+                                       None, length=self.num_timesteps, unroll=self.unroll)
         return (carry, output)
 
 
@@ -308,6 +315,7 @@ def predict_unroll(args):
     
     print("exhaustive, sa_scipy, sa_our")
     print(','.join(map(str, predict_list)))
+    print(','.join(map(str, features)))
 
 
 def train(args):
@@ -317,31 +325,37 @@ def train(args):
     rng = jrandom.PRNGKey(0)
 
     model = NeuralFBSDE(in_size=args.dim + 1, out_size=1,
-                        width_size=args.width_size, depth=args.depth, noise_size=args.dim, key=rng)
+                        width_size=args.width_size, depth=args.depth, noise_size=args.dim, num_timesteps=args.num_timesteps, unroll=args.unroll, key=rng)
 
-    # train
-    x0 = jnp.array([1.0, 0.5] * int(args.dim / 2))
-    x0 = jnp.broadcast_to(x0, (args.batch_size, args.dim))
+    t0 = jnp.array(0.0)
+    dt = jnp.array(0.2)
+    x0 = jnp.ones((args.dim, ))
+    hlo_module = jax.xla_computation(model)(t0, dt, x0).as_hlo_module()
+    client = jax.lib.xla_bridge.get_backend()
+    cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+    flops = cost['flops']
 
-    optimizer = optax.adam(learning_rate)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    print(flops)
 
-    for step in range(args.num_iters):
-        rng, _ = jrandom.split(rng)
-        bm_key = jrandom.split(rng, args.batch_size)
-        # data = fetch_minibatch(rng)
-        loss, model, loss, y_pred = train_step(
-            model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
+    # optimizer = optax.adam(learning_rate)
+    # opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-        if step == 0:
-            compile_ts = time.time()
+    # for step in range(args.num_iters):
+    #     rng, _ = jrandom.split(rng)
+    #     bm_key = jrandom.split(rng, args.batch_size)
+    #     # data = fetch_minibatch(rng)
+    #     loss, model, loss, y_pred = train_step(
+    #         model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
 
-    compile_time = compile_ts - start_ts
-    run_time = time.time() - compile_ts
+    #     if step == 0:
+    #         compile_ts = time.time()
 
-    print(f"unroll: {args.unroll}, compile_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+    # compile_time = compile_ts - start_ts
+    # run_time = time.time() - compile_ts
 
-    del model
+    # print(f"unroll: {args.unroll}, compile_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+
+    # del model
 
 
 def main():
@@ -349,19 +363,21 @@ def main():
     args = Args(batch_size=64,
                 dt=0.2,
                 dim=32,
-                num_timesteps=200,
+                num_timesteps=100,
                 num_iters=1000,
                 depth=3,
                 width_size=128,
                 unroll=1,
                 search_method="exhaustive")
     # warm up run
-    train(args)
-    for unroll in unroll_list:
-        args.unroll = unroll
-        train(args)
+    # train(args)
+    # for unroll in unroll_list:
+    #     args.unroll = unroll
+    #     train(args)
 
-    predict_unroll(args)
+    # predict_unroll(args)
+    
+    train(args)
     
 
 if __name__ == '__main__':

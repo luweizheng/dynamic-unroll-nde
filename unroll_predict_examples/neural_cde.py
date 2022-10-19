@@ -206,17 +206,18 @@ class NeuralCDE(eqx.Module):
         carry = (i+1, t1, dt, y1)
         return (carry , y1)
 
-    def __call__(self, ts, coeffs, evolving_out=False, unroll=1):
+    def __call__(self, ts, coeffs, evolving_out=True, unroll=1):
         
         control = diffrax.CubicInterpolation(ts, coeffs)
         term = diffrax.ControlTerm(self.func, control).to_ode()
         dt0 = ts[1] - ts[0]
         y0 = self.initial(control.evaluate(ts[0]))
         carry = (0, ts[0], dt0, y0)
+        func = self.func_contr_term(term, dt0)
         
         def step_fn(carry, inp=None):
             del inp
-            return self.step(carry, term)
+            return self.ralston_step_fn(carry, func)
         
         _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=unroll)
         if evolving_out:
@@ -327,6 +328,7 @@ def predict_unroll(args):
     
     print("exhaustive, sa_scipy, sa_our")
     print(','.join(map(str, predict_list)))
+    print(','.join(map(str, features)))
     
     
 
@@ -337,45 +339,54 @@ def train(args):
     ts, coeffs, labels, data_size = get_data(
         args.dataset_size, args.add_noise, args.num_timesteps,key=train_data_key
     )
+    ts = ts[0]
+    coeffs = jnp.asarray(coeffs)
+    coeffs = coeffs[:,0,:]
     
     model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key)
 
-    @eqx.filter_jit
-    def loss(model, ti, label_i, coeff_i, unroll):
-        fn = functools.partial(model, unroll=unroll)
-        pred = jax.vmap(fn)(ti, coeff_i)
-        # Binary cross-entropy
-        bxe = label_i * jnp.log(pred) + (1 - label_i) * jnp.log(1 - pred)
-        bxe = -jnp.mean(bxe)
-        acc = jnp.mean((pred > 0.5) == (label_i == 1))
-        return bxe, acc
+    hlo_module = jax.xla_computation(model)(ts=ts, coeffs=coeffs).as_hlo_module()
+    client = jax.lib.xla_bridge.get_backend()
+    cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+    flops = cost['flops']
 
-    grad_loss = eqx.filter_value_and_grad(loss, has_aux=True)
+    print(flops)
+    # @eqx.filter_jit
+    # def loss(model, ti, label_i, coeff_i, unroll):
+    #     fn = functools.partial(model, unroll=unroll)
+    #     pred = jax.vmap(fn)(ti, coeff_i)
+    #     # Binary cross-entropy
+    #     bxe = label_i * jnp.log(pred) + (1 - label_i) * jnp.log(1 - pred)
+    #     bxe = -jnp.mean(bxe)
+    #     acc = jnp.mean((pred > 0.5) == (label_i == 1))
+    #     return bxe, acc
 
-    @eqx.filter_jit
-    def make_step(model, data_i, opt_state):
-        ti, label_i, *coeff_i = data_i
-        (bxe, acc), grads = grad_loss(model, ti, label_i, coeff_i, args.unroll)
-        updates, opt_state = optim.update(grads, opt_state)
-        model = eqx.apply_updates(model, updates)
-        return bxe, acc, model, opt_state
+    # grad_loss = eqx.filter_value_and_grad(loss, has_aux=True)
 
-    optim = optax.adam(args.lr)
-    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-    start_time = time.time()
-    for step, data_i in zip(
-        range(args.num_iters), dataloader((ts, labels) + coeffs, args.batch_size, key=loader_key)
-    ):
-        bxe, acc, model, opt_state = make_step(model, data_i, opt_state)
-        if step == 0:
-            compile_ts = time.time()
-    compile_time = compile_ts - start_time
-    run_time = time.time() - compile_ts
-    print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
-    del model
+    # @eqx.filter_jit
+    # def make_step(model, data_i, opt_state):
+    #     ti, label_i, *coeff_i = data_i
+    #     (bxe, acc), grads = grad_loss(model, ti, label_i, coeff_i, args.unroll)
+    #     updates, opt_state = optim.update(grads, opt_state)
+    #     model = eqx.apply_updates(model, updates)
+    #     return bxe, acc, model, opt_state
+
+    # optim = optax.adam(args.lr)
+    # opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    # start_time = time.time()
+    # for step, data_i in zip(
+    #     range(args.num_iters), dataloader((ts, labels) + coeffs, args.batch_size, key=loader_key)
+    # ):
+    #     bxe, acc, model, opt_state = make_step(model, data_i, opt_state)
+    #     if step == 0:
+    #         compile_ts = time.time()
+    # compile_time = compile_ts - start_time
+    # run_time = time.time() - compile_ts
+    # print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+    # del model
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100, 200]
+    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100]
     args = Args(batch_size=32,
                 lr=1e-2,
                 dataset_size=256,
@@ -395,7 +406,7 @@ def main():
     #     args.unroll = unroll
     #     train(args)
 
-    predict_unroll(args)
+    train(args)
     
 if __name__ == '__main__':
     main()

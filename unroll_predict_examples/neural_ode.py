@@ -186,7 +186,7 @@ class NeuralODE(eqx.Module):
         carry = (0, t0, dt0, y0)
         
         def step_fn(carry, inp):
-            return self.step(carry)
+            return self.ralston_step_fn(carry)
         
         _, ys = jax.lax.scan(step_fn, carry, xs=None, length=len(ts), unroll=unroll)
         
@@ -261,6 +261,8 @@ def predict_unroll(args):
     run_model_loaded = xgb.Booster()
     run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
     
+    
+    
     predict_list=[]
     
     def cost_fn(unroll):
@@ -309,6 +311,8 @@ def predict_unroll(args):
     
     print("exhaustive, sa_scipy, sa_our")
     print(','.join(map(str, predict_list)))
+    
+    print(','.join(map(str, features)))
 
 def train(args):
     key = jrandom.PRNGKey(args.seed)
@@ -317,22 +321,32 @@ def train(args):
     ts, ys = get_data(args.dataset_size, args.num_timesteps, key=data_key)
     _, length_size, data_size = ys.shape
     model = NeuralODE(data_size, args.width_size, args.depth, key=model_key)
-    optim = optax.adabelief(args.lr)
-    opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-    _ts = ts[: int(length_size * 0.5)]
-    _ys = ys[:, : int(length_size * 0.5)]
-    start_ts= time.time()
-    for step, (yi,) in zip(
-            range(args.num_iters), dataloader((_ys,), args.batch_size, key=loader_key)
-        ):
-            loss, model, opt_state = make_step(_ts, yi, model, optim ,opt_state, args.unroll)
-            if step == 0:
-                compile_ts = time.time()
-    compile_time = compile_ts - start_ts
-    run_time = time.time() - compile_ts
-    print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+    # optim = optax.adabelief(args.lr)
+    # opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
+    # _ts = ts[: int(length_size * 0.5)]
+    # _ys = ys[:, : int(length_size * 0.5)]
+    
+    ts = jnp.linspace(0, 1, 100)
+    y0 = jnp.ones((data_size, ))
+    
+    hlo_module = jax.xla_computation(model)(ts=ts, y0=y0).as_hlo_module()
+    client = jax.lib.xla_bridge.get_backend()
+    cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
+    flops = cost['flops']
 
-    del model
+    print(flops)
+    # start_ts= time.time()
+    # for step, (yi,) in zip(
+    #         range(args.num_iters), dataloader((_ys,), args.batch_size, key=loader_key)
+    #     ):
+    #         loss, model, opt_state = make_step(_ts, yi, model, optim ,opt_state, args.unroll)
+    #         if step == 0:
+    #             compile_ts = time.time()
+    # compile_time = compile_ts - start_ts
+    # run_time = time.time() - compile_ts
+    # print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
+
+    # del model
 
 def main():
     args = Args (
@@ -351,7 +365,7 @@ def main():
     # for unroll in unroll_list:
     #     args.unroll = unroll
     #     train(args)
-    predict_unroll(args)
+    train(args)
 
 
 if __name__ == '__main__':
