@@ -1,21 +1,25 @@
 import time
-import diffrax
-import equinox as eqx  # https://github.com/patrick-kidger/equinox
+import argparse
+from dataclasses import dataclass
+
+import numpy as np
+import matplotlib.pyplot as plt
+
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
-import numpy as np
 import jax.random as jrandom
-import matplotlib.pyplot as plt
-import optax  # https://github.com/deepmind/optax
-from dataclasses import dataclass
 import jax.tree_util as jtu
-import argparse
+
+import diffrax
+import equinox as eqx  # https://github.com/patrick-kidger/equinox
+import optax  # https://github.com/deepmind/optax
 
 
 _one_third = 1 / 3
 _two_thirds = 2 / 3
 _one_sixth = 1 / 6
+
 
 class Func(eqx.Module):
     mlp: eqx.nn.MLP
@@ -61,8 +65,8 @@ class NeuralODE(eqx.Module):
         k3 = self.func(t0 + 3/4 * dt, y0 + 3/4 * k2)
         y1 = (2 / 9 * k1 + 1 / 3 * k2 + 4 / 9 * k3) * dt + y0
         carry = (i+1, t1, dt, y1)
-        return (carry , y1)
-    
+        return (carry, y1)
+
     # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Classic_fourth-order_method
     def rk4_step_fn(self, carry):
         (i, t0, dt, y0) = carry
@@ -74,19 +78,20 @@ class NeuralODE(eqx.Module):
         k4 = self.func(t1, y0 + dt * k3, args=None)
         y1 = (k1 + 2 * (k2 + k3) + k4) * dt * _one_sixth + y0
         carry = (i+1, t1, dt, y1)
-        return (carry , y1)
+        return (carry, y1)
 
     def rk4_alt_step_fn(self, carry):
         (i, t0, dt, y0) = carry
         t1 = t0 + dt
         k1 = self.func(t0, y0, args=None)
-        k2 = self.func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+        k2 = self.func(t0 + dt * _one_third, y0 +
+                       dt * k1 * _one_third, args=None)
         k3 = self.func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
         k4 = self.func(t1, y0 + dt * (k1 - k2 + k3), args=None)
         y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
         carry = (i+1, t1, dt, y1)
-        return (carry , y1)
-    
+        return (carry, y1)
+
     def euler_step_fn(self, carry):
         (i, t0, dt, y0) = carry
         t1 = t0 + dt
@@ -100,12 +105,10 @@ class NeuralODE(eqx.Module):
         dt0 = ts[1] - ts[0]
         y0 = y0
         carry = (0, t0, dt0, y0)
-        
 
         def step_fn(carry, input=None):
             del input
             return self.euler_step_fn(carry)
-        
 
         if self.diffrax_solver:
             solution = diffrax.diffeqsolve(
@@ -121,7 +124,7 @@ class NeuralODE(eqx.Module):
             ys = solution.ys
         else:
             _, ys = jax.lax.scan(step_fn, carry, xs=None,
-                                    length=len(ts), unroll=self.unroll)
+                                 length=len(ts), unroll=self.unroll)
 
         return ys
 
@@ -202,10 +205,10 @@ def train(args):
             _ts, yi, model, optim, opt_state)
         if step == 0:
             compile_ts = time.time()
-        # if (step % args.print_every) == 0 or step == args.num_iters - 1:
-        #     cal_end = time.time()
-        #     print(
-        #         f"Step: {step}, Loss: {loss}, Computation time: {cal_end - cal_start}")
+        if (step % args.print_every) == 0 or step == args.num_iters - 1:
+            cal_end = time.time()
+            print(
+                f"Step: {step}, Loss: {loss}, Computation time: {cal_end - cal_start}")
 
     if args.print_time_use:
         compile_time = compile_ts - start_ts

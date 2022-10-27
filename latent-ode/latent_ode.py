@@ -1,23 +1,25 @@
-
-
 import time
-import diffrax
-import equinox as eqx
+import argparse
+
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
-import matplotlib
-import matplotlib.pyplot as plt
-import numpy as np
+
+import diffrax
+import equinox as eqx
 import optax
-import argparse
 
 matplotlib.rcParams.update({"font.size": 30})
 
 _one_third = 1 / 3
 _two_thirds = 2 / 3
 _one_sixth = 1 / 6
+
 
 class Func(eqx.Module):
     scale: jnp.ndarray
@@ -37,7 +39,7 @@ class LatentODE(eqx.Module):
 
     hidden_size: int
     latent_size: int
-    
+
     diffrax_solver: bool
     unroll: int
 
@@ -74,6 +76,7 @@ class LatentODE(eqx.Module):
         self.diffrax_solver = diffrax_solver
         self.unroll = unroll
     # Encoder of the VAE
+
     def _latent(self, ts, ys, key):
         data = jnp.concatenate([ts[:, None], ys], axis=1)
         hidden = jnp.zeros((self.hidden_size,))
@@ -94,8 +97,8 @@ class LatentODE(eqx.Module):
         k3 = self.func(t0 + 3/4 * dt, y0 + 3/4 * k2)
         y1 = (2 / 9 * k1 + 1 / 3 * k2 + 4 / 9 * k3) * dt + y0
         carry = (i+1, t1, dt, y1)
-        return (carry , y1)
-    
+        return (carry, y1)
+
     # https://en.wikipedia.org/wiki/List_of_Runge%E2%80%93Kutta_methods#Classic_fourth-order_method
     def rk4_step_fn(self, carry):
         (i, t0, dt, y0) = carry
@@ -107,19 +110,20 @@ class LatentODE(eqx.Module):
         k4 = self.func(t1, y0 + dt * k3, args=None)
         y1 = (k1 + 2 * (k2 + k3) + k4) * dt * _one_sixth + y0
         carry = (i+1, t1, dt, y1)
-        return (carry , y1)
-    
+        return (carry, y1)
+
     def rk4_alt_step_fn(self, carry):
         (i, t0, dt, y0) = carry
         t1 = t0 + dt
         k1 = self.func(t0, y0, args=None)
-        k2 = self.func(t0 + dt * _one_third, y0 + dt * k1 * _one_third, args=None)
+        k2 = self.func(t0 + dt * _one_third, y0 +
+                       dt * k1 * _one_third, args=None)
         k3 = self.func(t0 + dt * _two_thirds, y0 + dt * (k2 - k1 * _one_third))
         k4 = self.func(t1, y0 + dt * (k1 - k2 + k3), args=None)
         y1 = (k1 + 3 * (k2 + k3) + k4) * dt * 0.125 + y0
         carry = (i+1, t1, dt, y1)
-        return (carry , y1)
-    
+        return (carry, y1)
+
     def euler_step_fn(self, carry):
         (i, t0, dt, y0) = carry
         t1 = t0 + dt
@@ -127,20 +131,18 @@ class LatentODE(eqx.Module):
         y1 = y0 + dy
         carry = (i+1, t1, dt, y1)
         return (carry, y1)
-    
+
     # Decoder of the VAE
     def _sample(self, ts, latent):
         dt0 = 0.4  # selected as a reasonable choice for this problem
         y0 = self.latent_to_hidden(latent)
         t0 = ts[0]
         carry = (0, t0, dt0, y0)
-        
 
         def step_fn(carry, input=None):
             del input
             return self.ralston_step_fn(carry)
-        
-        
+
         if self.diffrax_solver:
             sol = diffrax.diffeqsolve(
                 diffrax.ODETerm(self.func),
@@ -154,9 +156,8 @@ class LatentODE(eqx.Module):
             ys = sol.ys
         else:
             _, ys = jax.lax.scan(step_fn, carry, xs=None,
-                                    length=len(ts), unroll=self.unroll)
+                                 length=len(ts), unroll=self.unroll)
         return jax.vmap(self.hidden_to_data)(ys)
-        
 
     @staticmethod
     def _loss(ys, pred_ys, mean, std):
@@ -186,7 +187,8 @@ def get_data(dataset_size, num_timesteps, *, key):
 
     t0 = 0
     t1 = 2 + jrandom.uniform(tkey1, (dataset_size,))
-    ts = jrandom.uniform(tkey2, (dataset_size, num_timesteps)) * (t1[:, None] - t0) + t0
+    ts = jrandom.uniform(tkey2, (dataset_size, num_timesteps)
+                         ) * (t1[:, None] - t0) + t0
     ts = jnp.sort(ts)
     dt0 = 0.1
 
@@ -209,6 +211,7 @@ def get_data(dataset_size, num_timesteps, *, key):
 
     return ts, ys
 
+
 def dataloader(arrays, batch_size, *, key):
     dataset_size = arrays[0].shape[0]
     assert all(array.shape[0] == dataset_size for array in arrays)
@@ -224,9 +227,11 @@ def dataloader(arrays, batch_size, *, key):
             start = end
             end = start + batch_size
 
+
 def train(args):
     key = jrandom.PRNGKey(args.seed)
-    data_key, model_key, loader_key, train_key, sample_key = jrandom.split(key, 5)
+    data_key, model_key, loader_key, train_key, sample_key = jrandom.split(
+        key, 5)
 
     ts, ys = get_data(args.dataset_size, args.num_timesteps, key=data_key)
 
@@ -260,16 +265,17 @@ def train(args):
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     # Plot results
-    # num_plots = 1 + (args.num_iters - 1) // args.save_every
-    # if ((args.num_iters - 1) % args.save_every) != 0:
-    #     num_plots += 1
-    # fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
-    # axs[0].set_ylabel("x")
-    # axs = iter(axs)
-    
+    num_plots = 1 + (args.num_iters - 1) // args.save_every
+    if ((args.num_iters - 1) % args.save_every) != 0:
+        num_plots += 1
+    fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
+    axs[0].set_ylabel("x")
+    axs = iter(axs)
+
     start_ts = time.time()
     for step, (ts_i, ys_i) in zip(
-        range(args.num_iters), dataloader((ts, ys), args.batch_size, key=loader_key)
+        range(args.num_iters), dataloader(
+            (ts, ys), args.batch_size, key=loader_key)
     ):
         cal_start = time.time()
         value, model, opt_state, train_key = make_step(
@@ -277,33 +283,33 @@ def train(args):
         )
         if step == 0:
             compile_ts = time.time()
-        # if (step % args.print_every) == 0 or step == args.num_iters - 1:
-        #     cal_end = time.time()
-        #     print(
-        #         f"Step: {step}, Loss: {value}, Computation time: {cal_end - cal_start}")
-            
-        #     if (step % args.save_every) == 0 or step == args.num_iters - 1:
-        #         ax = next(axs)
-        #         # Sample over a longer time interval than we trained on. The model will be
-        #         # sufficiently good that it will correctly extrapolate!
-        #         sample_t = jnp.linspace(0, 12, 300)
-        #         sample_y = model.sample(sample_t, key=sample_key)
-        #         sample_t = np.asarray(sample_t)
-        #         sample_y = np.asarray(sample_y)
-        #         ax.plot(sample_t, sample_y[:, 0])
-        #         ax.plot(sample_t, sample_y[:, 1])
-        #         ax.set_xticks([])
-        #         ax.set_yticks([])
-        #         ax.set_xlabel("t")
-        # plt.savefig("latent_ode.png")
-        # plt.show()
-    
+        if (step % args.print_every) == 0 or step == args.num_iters - 1:
+            cal_end = time.time()
+            print(
+                f"Step: {step}, Loss: {value}, Computation time: {cal_end - cal_start}")
+
+            if (step % args.save_every) == 0 or step == args.num_iters - 1:
+                ax = next(axs)
+                # Sample over a longer time interval than we trained on. The model will be
+                # sufficiently good that it will correctly extrapolate!
+                sample_t = jnp.linspace(0, 12, 300)
+                sample_y = model.sample(sample_t, key=sample_key)
+                sample_t = np.asarray(sample_t)
+                sample_y = np.asarray(sample_y)
+                ax.plot(sample_t, sample_y[:, 0])
+                ax.plot(sample_t, sample_y[:, 1])
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_xlabel("t")
+        plt.savefig("latent_ode.png")
+        plt.show()
+
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
-        print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
-            
-    
+        print(
+            f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time }, total_time: {compile_time + run_time }")
+
 
 def main():
     parser = argparse.ArgumentParser()
