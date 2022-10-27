@@ -1,16 +1,20 @@
 import math
 import time
+import argparse
+from typing import Sequence, Callable
+
 import matplotlib.pyplot as plt
 import numpy as np
+
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
+
 import optax 
-import argparse
-from typing import Sequence, Callable
 import equinox as eqx
 import diffrax
+
 import sys; 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
@@ -264,13 +268,7 @@ def main():
     
     args = parser.parse_args()
 
-    # warm up run
     train(args)
-    # unroll_list = [2, 5, 10, 15, 20, 30, 40, 50]
-    # for unroll in unroll_list:
-    #     args.unroll = unroll
-    #     train(args)
-
 
 if __name__ == '__main__':
     main()

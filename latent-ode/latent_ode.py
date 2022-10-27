@@ -265,12 +265,13 @@ def train(args):
     opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
 
     # Plot results
-    num_plots = 1 + (args.num_iters - 1) // args.save_every
-    if ((args.num_iters - 1) % args.save_every) != 0:
-        num_plots += 1
-    fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
-    axs[0].set_ylabel("x")
-    axs = iter(axs)
+    if args.plot:
+        num_plots = 1 + (args.num_iters - 1) // args.save_every
+        if ((args.num_iters - 1) % args.save_every) != 0:
+            num_plots += 1
+        fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
+        axs[0].set_ylabel("x")
+        axs = iter(axs)
 
     start_ts = time.time()
     for step, (ts_i, ys_i) in zip(
@@ -287,11 +288,10 @@ def train(args):
             cal_end = time.time()
             print(
                 f"Step: {step}, Loss: {value}, Computation time: {cal_end - cal_start}")
-
+        
+        if args.plot:
             if (step % args.save_every) == 0 or step == args.num_iters - 1:
                 ax = next(axs)
-                # Sample over a longer time interval than we trained on. The model will be
-                # sufficiently good that it will correctly extrapolate!
                 sample_t = jnp.linspace(0, 12, 300)
                 sample_y = model.sample(sample_t, key=sample_key)
                 sample_t = np.asarray(sample_t)
@@ -301,14 +301,17 @@ def train(args):
                 ax.set_xticks([])
                 ax.set_yticks([])
                 ax.set_xlabel("t")
+                
+    if args.plot:
         plt.savefig("latent_ode.png")
         plt.show()
 
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
+        print("unroll, compile_time, run_time, total_time")
         print(
-            f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time }, total_time: {compile_time + run_time }")
+            f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time}, total_time: {compile_time + run_time }")
 
 
 def main():
@@ -321,7 +324,7 @@ def main():
     parser.add_argument('--latent-size', type=int, default=16)
     parser.add_argument('--depth', type=int, default=2)
     parser.add_argument('--num-timesteps', type=int, default=20)
-    parser.add_argument('--num-iters', type=int, default=500)
+    parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)
     parser.add_argument('--plot', action='store_true')

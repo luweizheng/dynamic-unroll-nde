@@ -245,6 +245,7 @@ def train(args):
         end_ts = time.time()
         compile_time = compile_ts - start_ts
         run_time = end_ts - compile_ts
+        print("unroll, compile_time, run_time, total_time")
         print(f"{args.unroll}, {compile_time},{run_time }, {compile_time + run_time }")
 
     ts, coeffs, labels, _ = get_data(
@@ -279,12 +280,13 @@ def train(args):
         ax2.set_ylabel("y")
         ax2.set_zlabel("Classification")
         plt.tight_layout()
-        plt.savefig("neural_cde2.png")
+        plt.savefig("neural_cde.png")
         plt.show()
 
 
 def main():
     parser = argparse.ArgumentParser()
+    
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-2)
     parser.add_argument('--dataset-size', type=int, default=256)

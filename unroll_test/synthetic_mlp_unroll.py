@@ -1,23 +1,19 @@
 import time
 import math
 import argparse
+import itertools
 from typing import Union, Sequence
-from dataclasses import dataclass
 from functools import partial
 
-import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
+import jax.tree_util as jtu
+
+import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import optax  # https://github.com/deepmind/optax
 
-from jax.config import config
-import itertools
-import jax.tree_util as jtu
-# We use GPU as the default backend.
-# If you want to use cpu as backend, uncomment the following line.
-# config.update("jax_platform_name", "cpu")
 import os
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 

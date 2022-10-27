@@ -212,6 +212,7 @@ def train(args):
     if args.print_time_use:
         compile_time = compile_ts - start_ts
         run_time = time.time() - compile_ts
+        print("unroll, compile_time, run_time, total_time")
         print(f"{args.unroll}, {compile_time}, {run_time }, {compile_time + run_time}")
 
     if args.plot:
@@ -240,8 +241,8 @@ def main():
     parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
     parser.add_argument('--seed', type=int, default=5678)
-    parser.add_argument('--plot', action='store_true')
     parser.add_argument('--print-every', type=int, default=200)
+    parser.add_argument('--plot', action='store_true')
     parser.add_argument('--diffrax-solver', action='store_true')
     parser.add_argument('--print-time-use', action='store_true')
 

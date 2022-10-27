@@ -2,39 +2,24 @@ import sys
 import math
 import time
 import functools
+import argparse
 from typing import Sequence, Callable
-from dataclasses import dataclass
+
 
 import numpy as np
+import xgboost as xgb
 
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
 
-import optax
-import equinox as eqx
-import xgboost as xgb
+import equinox as eqx  # https://github.com/patrick-kidger/equinox
+import optax  # https://github.com/deepmind/optax
+
 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
-
-
-@dataclass
-class Args:
-    batch_size: int
-    dt: float
-
-    dim: int
-    num_timesteps: int
-    num_iters: int
-
-    depth: int
-    width_size: int
-
-    unroll: int
-    T: float = 1.0
-    search_method: str = "sa_scipy"
 
 
 class FNN(eqx.Module):
@@ -172,11 +157,6 @@ class NeuralFBSDE(eqx.Module):
         features.append(self.hidden_size)
 
 
-        # output = output + str(self.noise_size) + ','
-
-        # width_size: width for every layer of MLP
-        # output = output + str(self.width_size) + ','
-
         # depth: depth of all Dense layers
         features.append(self.depth)
         # depth of width <= 128
@@ -250,55 +230,55 @@ def train_step(model, x0, t0, dt, num_timesteps, optimizer, opt_state, unroll=1,
 
 
 def predict_unroll(args):
-    learning_rate = 1e-3
-    rng = jrandom.PRNGKey(0)
+    learning_rate = args.lr
+    rng = jrandom.PRNGKey(args.seed)
 
     model = NeuralFBSDE(in_size=args.dim + 1, out_size=1,
-                        width_size=args.width_size, depth=args.depth, noise_size=args.dim, key=rng)
+                        width_size=args.width_size, depth=args.depth, noise_size=args.dim, 
+                        num_timesteps=args.num_timesteps, unroll=args.unroll, key=rng)
+    
     features = model.make_cost_model_feature()
     features.append(args.batch_size)
     features.append(args.num_timesteps)
 
     compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
+    compile_model_loaded.load_model(args.xgb_dir+"titan_compile.txt")
 
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
+    run_model_loaded.load_model(args.xgb_dir+"titan_execution.txt")
     
+    predict_list=[]
     
     def cost_fn(unroll):
         cur_features = features + [unroll]
+        cur_features = np.array(cur_features, dtype=object)
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
-        total_time_pred = compilation_time_pred + run_time_pred * 50 # suppose 50000 iters then 200/1000 * 50000/200
+        total_time_pred = compilation_time_pred + run_time_pred * 50 # suppose 50000 iters then x/1000 * 50000/1000
         
         return total_time_pred
     
     # exhaustively iterate a list of candidates
-    unroll_list = [2, 5, 8, 10, 20, 40, 50, 100, 200]
+    unroll_list = [1, 2, 5, 10, 20, 25, 50, 100]
     total_time_pred_list = []
     for unroll in unroll_list:
         total_time_pred = cost_fn(unroll)
         total_time_pred_list.append(total_time_pred)
+        
     predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
-    
-    predict_list = []
-    
     predict_list.append(predicted_unroll)
     
     # scipy sa
-    bounds = [[2, args.num_timesteps // 2]]
+    bounds = [[2, args.num_timesteps//2]]
     from scipy.optimize import dual_annealing
 
-    result = dual_annealing(cost_fn, bounds, maxiter=20)
+    result = dual_annealing(cost_fn, bounds, maxiter=args.max_steps)
     predicted_unroll = result['x'][0]
-    
     predict_list.append(predicted_unroll)
     
     # my own implementation of SA
-    bounds = (2, args.num_timesteps // 2)
-
+    bounds = (2, args.num_timesteps//2)
     def clip(x, bounds):
         """ Force x to be in the interval."""
         a, b = bounds
@@ -309,65 +289,31 @@ def predict_unroll(args):
         amplitude = (max(bounds) - min(bounds)) * fraction / 10
         delta = (-amplitude/2.) + amplitude * np.random.random_sample()
         return clip(x + delta, bounds)
-    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=20, debug=False)
-    
+    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=args.max_steps, debug=False)
     predict_list.append(predicted_unroll)
     
+    # print result
     print("exhaustive, sa_scipy, sa_our")
     print(','.join(map(str, predict_list)))
-    print(','.join(map(str, features)))
-
-
-def train(args):
-    start_ts = time.time()
-
-    learning_rate = 1e-3
-    rng = jrandom.PRNGKey(0)
-
-    model = NeuralFBSDE(in_size=args.dim + 1, out_size=1,
-                        width_size=args.width_size, depth=args.depth, noise_size=args.dim, num_timesteps=args.num_timesteps, unroll=args.unroll, key=rng)
-
-    t0 = jnp.array(0.0)
-    dt = jnp.array(0.2)
-    x0 = jnp.ones((args.dim, ))
-
-    optimizer = optax.adam(learning_rate)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
-
-    for step in range(args.num_iters):
-        rng, _ = jrandom.split(rng)
-        bm_key = jrandom.split(rng, args.batch_size)
-        # data = fetch_minibatch(rng)
-        loss, model, loss, y_pred = train_step(
-            model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
-
-        if step == 0:
-            compile_ts = time.time()
-
-    compile_time = compile_ts - start_ts
-    run_time = time.time() - compile_ts
-
-    print(f"unroll: {args.unroll}, compile_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
-
-    del model
 
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100, 200]
-    args = Args(batch_size=64,
-                dt=0.2,
-                dim=32,
-                num_timesteps=100,
-                num_iters=1000,
-                depth=3,
-                width_size=128,
-                unroll=1,
-                search_method="exhaustive")
-    # warm up run
-    # train(args)
-    # for unroll in unroll_list:
-    #     args.unroll = unroll
-    #     train(args)
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--dt', type=float, default=0.1)
+    parser.add_argument('--dim', type=int, default=100)
+    parser.add_argument('--depth', type=int, default=3)
+    parser.add_argument('--width-size', type=int, default=64)
+    parser.add_argument('--num-timesteps', type=int, default=100)
+    parser.add_argument('--num-iters', type=int, default=1000)
+    parser.add_argument('--unroll', type=int, default=1)
+    parser.add_argument('--max_steps', type=int, default=5)
+    parser.add_argument('--seed', type=int, default=5678)
+    parser.add_argument('--xgb-dir', type=str, default='../cost-model/ckpt/')
+
+    args = parser.parse_args()
 
     predict_unroll(args)
     
