@@ -1,17 +1,21 @@
-import functools
+import sys
 import math
 import time
+import functools
+from typing import Sequence, Callable
 from dataclasses import dataclass
+
 import numpy as np
+
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
+import jax.tree_util as jtu
+
 import optax
-from typing import Sequence, Callable
 import equinox as eqx
 import xgboost as xgb
-import jax.tree_util as jtu
-import sys
+
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
 
@@ -21,16 +25,13 @@ class Args:
     batch_size: int
     dt: float
 
-    # dim of SDE
     dim: int
     num_timesteps: int
     num_iters: int
 
-    # network
     depth: int
     width_size: int
 
-    # dynamic unroll
     unroll: int
     T: float = 1.0
     search_method: str = "sa_scipy"
@@ -241,7 +242,6 @@ def train_step(model, x0, t0, dt, num_timesteps, optimizer, opt_state, unroll=1,
         return (loss, y_list)
 
     (loss, y), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(model)
-    # (loss, y), grads = grad_loss(model, x0, t0, dt, num_timesteps, unroll, key)
 
     updates, opt_state = optimizer.update(grads, opt_state)
     model = eqx.apply_updates(model, updates)
@@ -330,32 +330,26 @@ def train(args):
     t0 = jnp.array(0.0)
     dt = jnp.array(0.2)
     x0 = jnp.ones((args.dim, ))
-    hlo_module = jax.xla_computation(model)(t0, dt, x0).as_hlo_module()
-    client = jax.lib.xla_bridge.get_backend()
-    cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
-    flops = cost['flops']
 
-    print(flops)
+    optimizer = optax.adam(learning_rate)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    # optimizer = optax.adam(learning_rate)
-    # opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    for step in range(args.num_iters):
+        rng, _ = jrandom.split(rng)
+        bm_key = jrandom.split(rng, args.batch_size)
+        # data = fetch_minibatch(rng)
+        loss, model, loss, y_pred = train_step(
+            model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
 
-    # for step in range(args.num_iters):
-    #     rng, _ = jrandom.split(rng)
-    #     bm_key = jrandom.split(rng, args.batch_size)
-    #     # data = fetch_minibatch(rng)
-    #     loss, model, loss, y_pred = train_step(
-    #         model, x0, 0.0, args.dt, args.num_timesteps, optimizer, opt_state, args.unroll, bm_key)
+        if step == 0:
+            compile_ts = time.time()
 
-    #     if step == 0:
-    #         compile_ts = time.time()
+    compile_time = compile_ts - start_ts
+    run_time = time.time() - compile_ts
 
-    # compile_time = compile_ts - start_ts
-    # run_time = time.time() - compile_ts
+    print(f"unroll: {args.unroll}, compile_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
 
-    # print(f"unroll: {args.unroll}, compile_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
-
-    # del model
+    del model
 
 
 def main():
@@ -375,9 +369,7 @@ def main():
     #     args.unroll = unroll
     #     train(args)
 
-    # predict_unroll(args)
-    
-    train(args)
+    predict_unroll(args)
     
 
 if __name__ == '__main__':

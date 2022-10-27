@@ -1,18 +1,24 @@
-
-
 import time
-import diffrax
-import equinox as eqx
+import argparse
+
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import xgboost as xgb
+
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
-import matplotlib
-import matplotlib.pyplot as plt
-import numpy as np
-import optax
-import argparse
 import jax.tree_util as jtu
+
+import diffrax # https://github.com/patrick-kidger/diffrax
+import equinox as eqx  # https://github.com/patrick-kidger/equinox
+import optax  # https://github.com/deepmind/optax
+
+import sys; 
+sys.path.insert(0, '..')
+from simulated_annealing import annealing
 
 matplotlib.rcParams.update({"font.size": 30})
 
@@ -194,18 +200,18 @@ class LatentODE(eqx.Module):
         # step Arithmetic Intensity
         features.append(step_flops / step_bytes_access)
 
-        # total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+        total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.ralston_step_fn, eqx.is_array)))
 
         # # total params
-        # features.append(total_params / 1e6)
+        features.append(total_params / 1e6)
 
         # # hidden_size: the dimension of DE
-        # features.append(self.hidden_size)
+        features.append(self.hidden_size)
         
         # depth
-        features.append(self.depth)
+        features.append(self.depth * 2 + 2)
         #width_size barrel
-        features.append(self.depth)
+        features.append(self.depth * 2 + 2)
         # depth of width <= 128
         features.append(0)
         # depth of width <= 256
@@ -249,13 +255,67 @@ def predict_unroll(args):
         width_size=args.width_size,
         depth=args.depth,
         key=model_key,
-        diffrax_solver=args.diffrax_solver,
         unroll=args.unroll
     )
     
     features = model.make_cost_model_feature()
+    features.append(args.batch_size)
+    features.append(args.num_timesteps)
     
-    print(','.join(map(str, features)))
+    compile_model_loaded = xgb.Booster()
+    compile_model_loaded.load_model(args.xgb_dir+"titan_compile.txt")
+
+    run_model_loaded = xgb.Booster()
+    run_model_loaded.load_model(args.xgb_dir+"titan_execution.txt")
+    
+    predict_list=[]
+    
+    def cost_fn(unroll):
+        cur_features = features + [unroll]
+        cur_features = np.array(cur_features, dtype=object)
+        
+        compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
+        run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
+        total_time_pred = compilation_time_pred + run_time_pred * 50 # suppose 50000 iters then x/1000 * 50000/1000
+        
+        return total_time_pred
+    
+    # exhaustively iterate a list of candidates
+    unroll_list = [1, 2, 5, 10, 20, 25, 40, 50, 100, 200]
+    total_time_pred_list = []
+    for unroll in unroll_list:
+        total_time_pred = cost_fn(unroll)
+        total_time_pred_list.append(total_time_pred)
+        
+    predicted_unroll = unroll_list[np.argmin(total_time_pred_list)]
+    predict_list.append(predicted_unroll)
+    
+    # scipy sa
+    bounds = [[2, args.num_timesteps//2]]
+    from scipy.optimize import dual_annealing
+
+    result = dual_annealing(cost_fn, bounds, maxiter=args.max_steps)
+    predicted_unroll = result['x'][0]
+    predict_list.append(predicted_unroll)
+    
+    # my own implementation of SA
+    bounds = (2, args.num_timesteps//2)
+    def clip(x, bounds):
+        """ Force x to be in the interval."""
+        a, b = bounds
+        return int(max(min(x, b), a))
+
+    def random_neighbour(x, bounds, fraction=1):
+        """Move a little bit x, from the left or the right."""
+        amplitude = (max(bounds) - min(bounds)) * fraction / 10
+        delta = (-amplitude/2.) + amplitude * np.random.random_sample()
+        return clip(x + delta, bounds)
+    predicted_unroll, _, _, _ = annealing(bounds, cost_fn, random_neighbour=random_neighbour, maxsteps=args.max_steps, debug=False)
+    predict_list.append(predicted_unroll)
+    
+    # print result
+    print("exhaustive, sa_scipy, sa_our")
+    print(','.join(map(str, predict_list)))
 
 
 def get_data(dataset_size, num_timesteps, *, key):
@@ -303,94 +363,6 @@ def dataloader(arrays, batch_size, *, key):
             start = end
             end = start + batch_size
 
-def train(args):
-    key = jrandom.PRNGKey(args.seed)
-    data_key, model_key, loader_key, train_key, sample_key = jrandom.split(key, 5)
-
-    ts, ys = get_data(args.dataset_size, args.num_timesteps, key=data_key)
-
-    model = LatentODE(
-        data_size=ys.shape[-1],
-        hidden_size=args.hidden_size,
-        latent_size=args.latent_size,
-        width_size=args.width_size,
-        depth=args.depth,
-        key=model_key,
-        diffrax_solver=args.diffrax_solver,
-        unroll=args.unroll
-    )
-    
-    hlo_module = jax.xla_computation(model)(ts=ts[0],ys=ys[0], key=model_key).as_hlo_module()
-    client = jax.lib.xla_bridge.get_backend()
-    cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
-    flops = cost['flops']
-
-    print(flops)
-    
-
-    # @eqx.filter_value_and_grad
-    # def loss(model, ts_i, ys_i, key_i):
-    #     batch_size, _ = ts_i.shape
-    #     key_i = jrandom.split(key_i, batch_size)
-    #     loss = jax.vmap(model.train)(ts_i, ys_i, key=key_i)
-    #     return jnp.mean(loss)
-
-    # @eqx.filter_jit
-    # def make_step(model, opt_state, ts_i, ys_i, key_i):
-    #     value, grads = loss(model, ts_i, ys_i, key_i)
-    #     key_i = jrandom.split(key_i, 1)[0]
-    #     updates, opt_state = optim.update(grads, opt_state)
-    #     model = eqx.apply_updates(model, updates)
-    #     return value, model, opt_state, key_i
-
-    # optim = optax.adam(args.lr)
-    # opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-
-    # # Plot results
-    # # num_plots = 1 + (args.num_iters - 1) // args.save_every
-    # # if ((args.num_iters - 1) % args.save_every) != 0:
-    # #     num_plots += 1
-    # # fig, axs = plt.subplots(1, num_plots, figsize=(num_plots * 8, 8))
-    # # axs[0].set_ylabel("x")
-    # # axs = iter(axs)
-    
-    # start_ts = time.time()
-    # for step, (ts_i, ys_i) in zip(
-    #     range(args.num_iters), dataloader((ts, ys), args.batch_size, key=loader_key)
-    # ):
-    #     cal_start = time.time()
-    #     value, model, opt_state, train_key = make_step(
-    #         model, opt_state, ts_i, ys_i, train_key
-    #     )
-    #     if step == 0:
-    #         compile_ts = time.time()
-        # if (step % args.print_every) == 0 or step == args.num_iters - 1:
-        #     cal_end = time.time()
-        #     print(
-        #         f"Step: {step}, Loss: {value}, Computation time: {cal_end - cal_start}")
-            
-        #     if (step % args.save_every) == 0 or step == args.num_iters - 1:
-        #         ax = next(axs)
-        #         # Sample over a longer time interval than we trained on. The model will be
-        #         # sufficiently good that it will correctly extrapolate!
-        #         sample_t = jnp.linspace(0, 12, 300)
-        #         sample_y = model.sample(sample_t, key=sample_key)
-        #         sample_t = np.asarray(sample_t)
-        #         sample_y = np.asarray(sample_y)
-        #         ax.plot(sample_t, sample_y[:, 0])
-        #         ax.plot(sample_t, sample_y[:, 1])
-        #         ax.set_xticks([])
-        #         ax.set_yticks([])
-        #         ax.set_xlabel("t")
-        # plt.savefig("latent_ode.png")
-        # plt.show()
-    
-    # if args.print_time_use:
-    #     compile_time = compile_ts - start_ts
-    #     run_time = time.time() - compile_ts
-    #     print(f"unroll: {args.unroll}, compiel_time: {compile_time}, run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
-            
-    
 
 def main():
     parser = argparse.ArgumentParser()
@@ -404,20 +376,14 @@ def main():
     parser.add_argument('--num-timesteps', type=int, default=200)
     parser.add_argument('--num-iters', type=int, default=1000)
     parser.add_argument('--unroll', type=int, default=1)
+    parser.add_argument('--max_steps', type=int, default=5)
     parser.add_argument('--seed', type=int, default=5678)
-    parser.add_argument('--plot', action='store_true')
-    parser.add_argument('--save-every', type=int, default=250)
-    parser.add_argument('--print-every', type=int, default=200)
-    parser.add_argument('--diffrax-solver', action='store_true')
-    parser.add_argument('--print-time-use', action='store_true')
+    parser.add_argument('--xgb-dir', type=str, default='../cost-model/ckpt/')
 
     args = parser.parse_args()
     
-    train(args)
+    predict_unroll(args)
     
-
     
-
-
 if __name__ == "__main__":
     main()

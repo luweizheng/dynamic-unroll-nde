@@ -12,8 +12,8 @@ import jax.random as jrandom
 import jax.scipy as jsp
 import jax.tree_util as jtu
 
-from diffrax.misc import ω
-import diffrax
+
+import diffrax # https://github.com/patrick-kidger/diffrax
 import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import optax  # https://github.com/deepmind/optax
 

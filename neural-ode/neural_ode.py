@@ -1,6 +1,5 @@
 import time
 import argparse
-from dataclasses import dataclass
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,7 +10,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import jax.tree_util as jtu
 
-import diffrax
+import diffrax # https://github.com/patrick-kidger/diffrax
 import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import optax  # https://github.com/deepmind/optax
 

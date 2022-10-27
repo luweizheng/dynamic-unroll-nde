@@ -1,18 +1,24 @@
-from dataclasses import dataclass
 import functools
 import math
 import time
-from diffrax.misc import ω
-import diffrax
-import equinox as eqx  # https://github.com/patrick-kidger/equinox
+import argparse
+
+import xgboost as xgb
+import numpy as np
+
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
 import jax.scipy as jsp
 import jax.tree_util as jtu
+
+
+import diffrax # https://github.com/patrick-kidger/diffrax
+import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import optax  # https://github.com/deepmind/optax
-import xgboost as xgb
+
+
 import sys; 
 sys.path.insert(0, '..')
 from simulated_annealing import annealing
@@ -22,29 +28,6 @@ _one_third = 1 / 3
 _two_thirds = 2 / 3
 _one_sixth = 1 / 6
 
-@dataclass
-class Args:
-    
-    batch_size: int
-    lr:float
-    # dim of SDE
-    dataset_size: int
-    add_noise: bool
-    
-    num_timesteps: int
-    num_iters: int
-    
-    # network
-    hidden_size:int
-    depth: int
-    width_size: int
-    
-    # dynamic unroll
-    unroll: int 
-    seed:int
-    
-    max_steps: int
-    search_method: str = "exhaustive"
 
 class Func(eqx.Module):
     mlp: eqx.nn.MLP
@@ -176,7 +159,7 @@ class NeuralCDE(eqx.Module):
         # step Arithmetic Intensity
         features.append(step_flops / step_bytes_access)
 
-        total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.step, eqx.is_array)))
+        total_params = sum(p.size for p in jtu.tree_leaves(eqx.filter(self.ralston_step_fn, eqx.is_array)))
 
         # total params
         features.append(total_params / 1e6)
@@ -198,13 +181,6 @@ class NeuralCDE(eqx.Module):
         
         return features
         
-    def step(self, carry, term):
-        (i, t0, dt, y0) = carry
-        control = dt
-        y1 = (y0**ω + term.vf_prod(t0, y0, args=None, control=control) ** ω).ω
-        t1 = t0 + dt
-        carry = (i+1, t1, dt, y1)
-        return (carry , y1)
 
     def __call__(self, ts, coeffs, evolving_out=True, unroll=1):
         
@@ -260,7 +236,7 @@ def dataloader(arrays, batch_size, *, key):
             yield tuple(array[batch_perm] for array in arrays)
             start = end
             end = start + batch_size
-    
+            
 
 def predict_unroll(args):
     
@@ -273,9 +249,9 @@ def predict_unroll(args):
     
     model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key)
     compile_model_loaded = xgb.Booster()
-    compile_model_loaded.load_model("../cost-model/ckpt/titan_compile.txt")
+    compile_model_loaded.load_model(args.xgb_dir+"titan_compile.txt")
     run_model_loaded = xgb.Booster()
-    run_model_loaded.load_model("../cost-model/ckpt/titan_execution.txt")
+    run_model_loaded.load_model(args.xgb_dir+"titan_execution.txt")
     features = model.make_cost_model_feature(args.num_timesteps)
     features.append(args.batch_size)
     features.append(args.num_timesteps)
@@ -284,6 +260,7 @@ def predict_unroll(args):
     
     def cost_fn(unroll):
         cur_features = features + [unroll]
+        cur_features = np.array(cur_features, dtype=object)
         
         compilation_time_pred = compile_model_loaded.predict(xgb.DMatrix([cur_features]))
         run_time_pred = run_model_loaded.predict(xgb.DMatrix([cur_features]))
@@ -305,7 +282,7 @@ def predict_unroll(args):
     bounds = [[2, args.num_timesteps//2]]
     from scipy.optimize import dual_annealing
 
-    result = dual_annealing(cost_fn, bounds, maxiter=20)
+    result = dual_annealing(cost_fn, bounds, maxiter=args.max_steps)
     predicted_unroll = result['x'][0]
     
     predict_list.append(predicted_unroll)
@@ -328,85 +305,27 @@ def predict_unroll(args):
     
     print("exhaustive, sa_scipy, sa_our")
     print(','.join(map(str, predict_list)))
-    print(','.join(map(str, features)))
-    
-    
-
-def train(args):
-    key = jrandom.PRNGKey(args.seed)
-    train_data_key, test_data_key, model_key, loader_key = jrandom.split(key, 4)
-
-    ts, coeffs, labels, data_size = get_data(
-        args.dataset_size, args.add_noise, args.num_timesteps,key=train_data_key
-    )
-    ts = ts[0]
-    coeffs = jnp.asarray(coeffs)
-    coeffs = coeffs[:,0,:]
-    
-    model = NeuralCDE(data_size, args.hidden_size, args.width_size, args.depth, key=model_key)
-
-    hlo_module = jax.xla_computation(model)(ts=ts, coeffs=coeffs).as_hlo_module()
-    client = jax.lib.xla_bridge.get_backend()
-    cost = jax.lib.xla_client._xla.hlo_module_cost_analysis(client, hlo_module)
-    flops = cost['flops']
-
-    print(flops)
-    # @eqx.filter_jit
-    # def loss(model, ti, label_i, coeff_i, unroll):
-    #     fn = functools.partial(model, unroll=unroll)
-    #     pred = jax.vmap(fn)(ti, coeff_i)
-    #     # Binary cross-entropy
-    #     bxe = label_i * jnp.log(pred) + (1 - label_i) * jnp.log(1 - pred)
-    #     bxe = -jnp.mean(bxe)
-    #     acc = jnp.mean((pred > 0.5) == (label_i == 1))
-    #     return bxe, acc
-
-    # grad_loss = eqx.filter_value_and_grad(loss, has_aux=True)
-
-    # @eqx.filter_jit
-    # def make_step(model, data_i, opt_state):
-    #     ti, label_i, *coeff_i = data_i
-    #     (bxe, acc), grads = grad_loss(model, ti, label_i, coeff_i, args.unroll)
-    #     updates, opt_state = optim.update(grads, opt_state)
-    #     model = eqx.apply_updates(model, updates)
-    #     return bxe, acc, model, opt_state
-
-    # optim = optax.adam(args.lr)
-    # opt_state = optim.init(eqx.filter(model, eqx.is_inexact_array))
-    # start_time = time.time()
-    # for step, data_i in zip(
-    #     range(args.num_iters), dataloader((ts, labels) + coeffs, args.batch_size, key=loader_key)
-    # ):
-    #     bxe, acc, model, opt_state = make_step(model, data_i, opt_state)
-    #     if step == 0:
-    #         compile_ts = time.time()
-    # compile_time = compile_ts - start_time
-    # run_time = time.time() - compile_ts
-    # print(f"unroll: {args.unroll}, compile_time: {compile_time},run_time: {run_time * 50}, total_time: {compile_time + run_time * 50}")
-    # del model
 
 def main():
-    unroll_list = [1, 2, 5, 8, 10, 20, 40, 50, 100]
-    args = Args(batch_size=32,
-                lr=1e-2,
-                dataset_size=256,
-                add_noise=False,
-                num_timesteps=100,
-                num_iters=1000,
-                hidden_size=16,
-                depth=2,
-                width_size=128,
-                unroll=1,
-                seed=5678,
-                max_steps=5)
     
-    #warm up
-    # train(args)
-    # for unroll in unroll_list:
-    #     args.unroll = unroll
-    #     train(args)
-
-    train(args)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=1e-2)
+    parser.add_argument('--dataset-size', type=int, default=256)
+    parser.add_argument('--add-noise', type=bool, default=False)
+    parser.add_argument('--hidden-size', type=int, default=16)
+    parser.add_argument('--width-size', type=int, default=128)
+    parser.add_argument('--depth', type=int, default=2)
+    parser.add_argument('--num-timesteps', type=int, default=100)
+    parser.add_argument('--num-iters', type=int, default=1000)
+    parser.add_argument('--unroll', type=int, default=1)
+    parser.add_argument('--max_steps', type=int, default=5)
+    parser.add_argument('--seed', type=int, default=5678)
+    parser.add_argument('--xgb-dir', type=str, default='../cost-model/ckpt/')
+    
+    args = parser.parse_args()
+    
+    predict_unroll(args)
     
 if __name__ == '__main__':
     main()
