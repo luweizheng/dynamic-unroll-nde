@@ -109,6 +109,8 @@ class NeuralODE(eqx.Module):
             del input
             return self.euler_step_fn(carry)
 
+            
+        
         if self.diffrax_solver:
             solution = diffrax.diffeqsolve(
                 diffrax.ODETerm(self.func),

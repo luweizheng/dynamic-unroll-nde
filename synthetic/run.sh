@@ -1,12 +1,7 @@
 #!/bin/bash
 
-#SBATCH --job-name=256-200
-#SBATCH --nodes=1
-#SBATCH --partition=titan
-#SBATCH --gpus=1
 
 # set up environment
-source activate jax
 BATCH_SIZE=256
 NUM_TIMESTEPS=200
 

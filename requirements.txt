@@ -1,0 +1,8 @@
+diffrax==0.2.1
+equinox==0.9.0
+jax==0.3.24
+matplotlib==3.5.2
+numpy==1.23.1
+optax==0.1.3
+scipy==1.8.1
+xgboost==1.6.1
